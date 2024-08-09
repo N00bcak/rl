@@ -6,6 +6,8 @@
 
 from torchrl.modules.tensordict_module.common import DistributionalDQNnet
 
+from .batchrenorm import BatchRenorm1d
+
 from .decision_transformer import DecisionTransformer
 from .exploration import NoisyLazyLinear, NoisyLinear, reset_noise
 from .model_based import (
@@ -30,5 +32,11 @@ from .models import (
     MLP,
     OnlineDTActor,
 )
-from .multiagent import MultiAgentConvNet, MultiAgentMLP, QMixer, VDNMixer
+from .multiagent import (
+    MultiAgentConvNet,
+    MultiAgentMLP,
+    MultiAgentNetBase,
+    QMixer,
+    VDNMixer,
+)
 from .utils import Squeeze2dLayer, SqueezeLayer

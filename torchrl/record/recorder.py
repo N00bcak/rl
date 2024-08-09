@@ -18,7 +18,7 @@ from tensordict.utils import NestedKey
 
 from torchrl._utils import _can_be_pickled
 from torchrl.data import TensorSpec
-from torchrl.data.tensor_specs import NonTensorSpec, UnboundedContinuousTensorSpec
+from torchrl.data.tensor_specs import NonTensor, Unbounded
 from torchrl.data.utils import CloudpickleWrapper
 from torchrl.envs import EnvBase
 from torchrl.envs.transforms import ObservationTransform, Transform
@@ -221,11 +221,11 @@ class VideoRecorder(ObservationTransform):
                 observation_trsf = make_grid(
                     obs_flat, nrow=int(math.ceil(math.sqrt(obs_flat.shape[0])))
                 )
-                self.obs.append(observation_trsf.to(torch.uint8))
+                self.obs.append(observation_trsf.to("cpu", torch.uint8))
             elif observation_trsf.ndimension() >= 4:
-                self.obs.extend(observation_trsf.to(torch.uint8).flatten(0, -4))
+                self.obs.extend(observation_trsf.to("cpu", torch.uint8).flatten(0, -4))
             else:
-                self.obs.append(observation_trsf.to(torch.uint8))
+                self.obs.append(observation_trsf.to("cpu", torch.uint8))
         return observation
 
     def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
@@ -506,11 +506,9 @@ class PixelRenderTransform(Transform):
         self._call(td_in)
         obs = td_in.get(self.out_keys[0])
         if isinstance(obs, NonTensorData):
-            spec = NonTensorSpec(device=obs.device, dtype=obs.dtype, shape=obs.shape)
+            spec = NonTensor(device=obs.device, dtype=obs.dtype, shape=obs.shape)
         else:
-            spec = UnboundedContinuousTensorSpec(
-                device=obs.device, dtype=obs.dtype, shape=obs.shape
-            )
+            spec = Unbounded(device=obs.device, dtype=obs.dtype, shape=obs.shape)
         observation_spec[self.out_keys[0]] = spec
         if switch:
             self.switch()

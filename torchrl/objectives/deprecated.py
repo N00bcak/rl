@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from numbers import Number
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ from tensordict.nn import dispatch, TensorDictModule
 from tensordict.utils import NestedKey
 from torch import Tensor
 
-from torchrl.data.tensor_specs import CompositeSpec
+from torchrl.data.tensor_specs import Composite
 from torchrl.envs.utils import ExplorationType, set_exploration_type, step_mdp
 from torchrl.objectives import default_value_kwargs, distance_loss, ValueEstimators
 from torchrl.objectives.common import LossModule
@@ -41,6 +41,13 @@ class REDQLoss_deprecated(LossModule):
         actor_network (TensorDictModule): the actor to be trained
         qvalue_network (TensorDictModule): a single Q-value network that will
             be multiplied as many times as needed.
+            If a single instance of `qvalue_network` is provided, it will be duplicated ``num_qvalue_nets``
+            times. If a list of modules is passed, their
+            parameters will be stacked unless they share the same identity (in which case
+            the original parameter will be expanded).
+
+            .. warning:: When a list of parameters if passed, it will __not__ be compared against the policy parameters
+              and all the parameters will be considered as untied.
 
     Keyword Args:
         num_qvalue_nets (int, optional): Number of Q-value networks to be trained.
@@ -75,7 +82,7 @@ class REDQLoss_deprecated(LossModule):
             ``"td_error"``.
         separate_losses (bool, optional): if ``True``, shared parameters between
             policy and critic will only be trained on the policy loss.
-            Defaults to ``False``, ie. gradients are propagated to shared
+            Defaults to ``False``, i.e., gradients are propagated to shared
             parameters for both policy and critic losses.
         reduction (str, optional): Specifies the reduction to apply to the output:
             ``"none"`` | ``"mean"`` | ``"sum"``. ``"none"``: no reduction will be applied,
@@ -134,7 +141,7 @@ class REDQLoss_deprecated(LossModule):
     def __init__(
         self,
         actor_network: TensorDictModule,
-        qvalue_network: TensorDictModule,
+        qvalue_network: TensorDictModule | List[TensorDictModule],
         *,
         num_qvalue_nets: int = 10,
         sub_sample_len: int = 2,
@@ -214,12 +221,14 @@ class REDQLoss_deprecated(LossModule):
         self._action_spec = action_spec
         self.target_entropy_buffer = None
         self.gSDE = gSDE
+        self._make_vmap()
         self.reduction = reduction
-
-        self._vmap_qvalue_networkN0 = _vmap_func(self.qvalue_network, (None, 0))
 
         if gamma is not None:
             raise TypeError(_GAMMA_LMBDA_DEPREC_ERROR)
+
+    def _make_vmap(self):
+        self._vmap_qvalue_networkN0 = _vmap_func(self.qvalue_network, (None, 0))
 
     @property
     def target_entropy(self):
@@ -242,8 +251,8 @@ class REDQLoss_deprecated(LossModule):
                         "the target entropy explicitely or provide the spec of the "
                         "action tensor in the actor network."
                     )
-                if not isinstance(action_spec, CompositeSpec):
-                    action_spec = CompositeSpec({self.tensor_keys.action: action_spec})
+                if not isinstance(action_spec, Composite):
+                    action_spec = Composite({self.tensor_keys.action: action_spec})
                 target_entropy = -float(
                     np.prod(action_spec[self.tensor_keys.action].shape)
                 )

@@ -66,12 +66,7 @@ from tensordict.utils import _unravel_key_to_tuple
 from torch import nn
 
 from torchrl.collectors import MultiSyncDataCollector, SyncDataCollector
-from torchrl.data.tensor_specs import (
-    CompositeSpec,
-    DiscreteTensorSpec,
-    NonTensorSpec,
-    UnboundedContinuousTensorSpec,
-)
+from torchrl.data.tensor_specs import Categorical, Composite, NonTensor, Unbounded
 from torchrl.envs import (
     CatFrames,
     CatTensors,
@@ -79,7 +74,9 @@ from torchrl.envs import (
     EnvBase,
     EnvCreator,
     ParallelEnv,
+    PendulumEnv,
     SerialEnv,
+    TicTacToeEnv,
 )
 from torchrl.envs.batched_envs import _stackable
 from torchrl.envs.gym_like import default_info_dict_reader
@@ -311,6 +308,62 @@ def test_rollout_predictability(device):
     ).all()
 
 
+# Check that the "terminated" key is filled in automatically if only the "done"
+# key is provided in `_step`.
+def test_done_key_completion_done():
+    class DoneEnv(CountingEnv):
+        def _step(
+            self,
+            tensordict: TensorDictBase,
+        ) -> TensorDictBase:
+            self.count += 1
+            tensordict = TensorDict(
+                source={
+                    "observation": self.count.clone(),
+                    "done": self.count > self.max_steps,
+                    "reward": torch.zeros_like(self.count, dtype=torch.float),
+                },
+                batch_size=self.batch_size,
+                device=self.device,
+            )
+            return tensordict
+
+    env = DoneEnv(max_steps=torch.tensor([[0], [1]]), batch_size=(2,))
+    td = env.reset()
+    env.rand_action(td)
+    td = env.step(td)
+    assert torch.equal(td[("next", "done")], torch.tensor([[True], [False]]))
+    assert torch.equal(td[("next", "terminated")], torch.tensor([[True], [False]]))
+
+
+# Check that the "done" key is filled in automatically if only the "terminated"
+# key is provided in `_step`.
+def test_done_key_completion_terminated():
+    class TerminatedEnv(CountingEnv):
+        def _step(
+            self,
+            tensordict: TensorDictBase,
+        ) -> TensorDictBase:
+            self.count += 1
+            tensordict = TensorDict(
+                source={
+                    "observation": self.count.clone(),
+                    "terminated": self.count > self.max_steps,
+                    "reward": torch.zeros_like(self.count, dtype=torch.float),
+                },
+                batch_size=self.batch_size,
+                device=self.device,
+            )
+            return tensordict
+
+    env = TerminatedEnv(max_steps=torch.tensor([[0], [1]]), batch_size=(2,))
+    td = env.reset()
+    env.rand_action(td)
+    td = env.step(td)
+    assert torch.equal(td[("next", "done")], torch.tensor([[True], [False]]))
+    assert torch.equal(td[("next", "terminated")], torch.tensor([[True], [False]]))
+
+
 @pytest.mark.skipif(not _has_gym, reason="no gym")
 @pytest.mark.parametrize("env_name", [PENDULUM_VERSIONED])
 @pytest.mark.parametrize("frame_skip", [1])
@@ -483,6 +536,7 @@ class TestParallel:
 
     @pytest.mark.parametrize("start_method", [None, mp_ctx])
     def test_serial_for_single(self, maybe_fork_ParallelEnv, start_method):
+        gc.collect()
         env = ParallelEnv(
             1,
             ContinuousActionVecMockEnv,
@@ -1849,18 +1903,12 @@ class TestInfoDict:
         env.set_info_dict_reader(
             default_info_dict_reader(
                 ["x_position"],
-                spec=CompositeSpec(
-                    x_position=UnboundedContinuousTensorSpec(
-                        dtype=torch.float64, shape=()
-                    )
-                ),
+                spec=Composite(x_position=Unbounded(dtype=torch.float64, shape=())),
             )
         )
 
         assert "x_position" in env.observation_spec.keys()
-        assert isinstance(
-            env.observation_spec["x_position"], UnboundedContinuousTensorSpec
-        )
+        assert isinstance(env.observation_spec["x_position"], Unbounded)
 
         tensordict = env.reset()
         tensordict = env.rand_step(tensordict)
@@ -1873,13 +1921,13 @@ class TestInfoDict:
         )
 
         for spec in (
-            {"x_position": UnboundedContinuousTensorSpec((), dtype=torch.float64)},
+            {"x_position": Unbounded((), dtype=torch.float64)},
             # None,
-            CompositeSpec(
-                x_position=UnboundedContinuousTensorSpec((), dtype=torch.float64),
+            Composite(
+                x_position=Unbounded((), dtype=torch.float64),
                 shape=[],
             ),
-            [UnboundedContinuousTensorSpec((), dtype=torch.float64)],
+            [Unbounded((), dtype=torch.float64)],
         ):
             env2 = GymWrapper(gym.make("HalfCheetah-v4"))
             env2.set_info_dict_reader(
@@ -2002,6 +2050,7 @@ class TestConcurrentEnvs:
 
     @staticmethod
     def main_penv(j, q=None):
+        gc.collect()
         device = "cpu" if not torch.cuda.device_count() else "cuda:0"
         n_workers = 1
         env_p = ParallelEnv(
@@ -2019,7 +2068,7 @@ class TestConcurrentEnvs:
             ],
         )
         spec = env_p.action_spec
-        policy = TestConcurrentEnvs.Policy(CompositeSpec(action=spec.to(device)))
+        policy = TestConcurrentEnvs.Policy(Composite(action=spec.to(device)))
         N = 10
         r_p = []
         r_s = []
@@ -2053,7 +2102,7 @@ class TestConcurrentEnvs:
             lambda i=i: CountingEnv(i, device=device) for i in range(j, j + n_workers)
         ]
         spec = make_envs[0]().action_spec
-        policy = TestConcurrentEnvs.Policy(CompositeSpec(action=spec))
+        policy = TestConcurrentEnvs.Policy(Composite(action=spec))
         collector = MultiSyncDataCollector(
             make_envs,
             policy,
@@ -2061,6 +2110,7 @@ class TestConcurrentEnvs:
             total_frames=N * n_workers * 100,
             storing_device=device,
             device=device,
+            cat_results=-1,
         )
         single_collectors = [
             SyncDataCollector(
@@ -2164,7 +2214,7 @@ class TestNestedSpecs:
         else:
             raise NotImplementedError
         reset = env.reset()
-        assert not isinstance(env.reward_spec, CompositeSpec)
+        assert not isinstance(env.reward_spec, Composite)
         for done_key in env.done_keys:
             assert (
                 env.full_done_spec[done_key]
@@ -2328,6 +2378,7 @@ class TestHeteroEnvs:
     def test_vec_env(
         self, batch_size, env_type, break_when_any_done, rollout_steps=4, n_workers=2
     ):
+        gc.collect()
         env_fun = lambda: HeterogeneousCountingEnv(batch_size=batch_size)
         if env_type == "serial":
             vec_env = SerialEnv(n_workers, env_fun)
@@ -2434,8 +2485,8 @@ def test_mocking_envs(envclass):
 class TestTerminatedOrTruncated:
     @pytest.mark.parametrize("done_key", ["done", "terminated", "truncated"])
     def test_root_prevail(self, done_key):
-        _spec = DiscreteTensorSpec(2, shape=(), dtype=torch.bool)
-        spec = CompositeSpec({done_key: _spec, ("agent", done_key): _spec})
+        _spec = Categorical(2, shape=(), dtype=torch.bool)
+        spec = Composite({done_key: _spec, ("agent", done_key): _spec})
         data = TensorDict({done_key: [False], ("agent", done_key): [True, False]}, [])
         assert not _terminated_or_truncated(data)
         assert not _terminated_or_truncated(data, full_done_spec=spec)
@@ -2498,8 +2549,8 @@ class TestTerminatedOrTruncated:
     def test_terminated_or_truncated_spec(self):
         done_shape = (2, 1)
         nested_done_shape = (2, 3, 1)
-        spec = CompositeSpec(
-            done=DiscreteTensorSpec(2, shape=done_shape, dtype=torch.bool),
+        spec = Composite(
+            done=Categorical(2, shape=done_shape, dtype=torch.bool),
             shape=[
                 2,
             ],
@@ -2516,12 +2567,12 @@ class TestTerminatedOrTruncated:
         )
         assert data.get("_reset", None) is None
 
-        spec = CompositeSpec(
+        spec = Composite(
             {
-                ("agent", "done"): DiscreteTensorSpec(
+                ("agent", "done"): Categorical(
                     2, shape=nested_done_shape, dtype=torch.bool
                 ),
-                ("nested", "done"): DiscreteTensorSpec(
+                ("nested", "done"): Categorical(
                     2, shape=nested_done_shape, dtype=torch.bool
                 ),
             },
@@ -2556,11 +2607,11 @@ class TestTerminatedOrTruncated:
         assert data["agent", "_reset"].shape == nested_done_shape
         assert data["nested", "_reset"].shape == nested_done_shape
 
-        spec = CompositeSpec(
+        spec = Composite(
             {
-                "truncated": DiscreteTensorSpec(2, shape=done_shape, dtype=torch.bool),
-                "terminated": DiscreteTensorSpec(2, shape=done_shape, dtype=torch.bool),
-                ("nested", "terminated"): DiscreteTensorSpec(
+                "truncated": Categorical(2, shape=done_shape, dtype=torch.bool),
+                "terminated": Categorical(2, shape=done_shape, dtype=torch.bool),
+                ("nested", "terminated"): Categorical(
                     2, shape=nested_done_shape, dtype=torch.bool
                 ),
             },
@@ -2591,6 +2642,7 @@ class TestLibThreading:
         reason="setting different threads across workers can randomly fail on OSX.",
     )
     def test_num_threads(self):
+        gc.collect()
         from torchrl.envs import batched_envs
 
         _run_worker_pipe_shared_mem_save = batched_envs._run_worker_pipe_shared_mem
@@ -2617,6 +2669,7 @@ class TestLibThreading:
         reason="setting different threads across workers can randomly fail on OSX.",
     )
     def test_auto_num_threads(self, maybe_fork_ParallelEnv):
+        gc.collect()
         init_threads = torch.get_num_threads()
 
         try:
@@ -2671,6 +2724,8 @@ def test_run_type_checks():
 @pytest.mark.skipif(not torch.cuda.device_count(), reason="No cuda device found.")
 @pytest.mark.parametrize("break_when_any_done", [True, False])
 def test_auto_cast_to_device(break_when_any_done):
+    gc.collect()
+
     env = ContinuousActionVecMockEnv(device="cpu")
     policy = Actor(
         nn.Linear(
@@ -2701,20 +2756,22 @@ def test_auto_cast_to_device(break_when_any_done):
 @pytest.mark.parametrize("device", get_default_devices())
 @pytest.mark.parametrize("share_individual_td", [True, False])
 def test_backprop(device, maybe_fork_ParallelEnv, share_individual_td):
+    gc.collect()
+
     # Tests that backprop through a series of single envs and through a serial env are identical
     # Also tests that no backprop can be achieved with parallel env.
     class DifferentiableEnv(EnvBase):
         def __init__(self, device):
             super().__init__(device=device)
-            self.observation_spec = CompositeSpec(
-                observation=UnboundedContinuousTensorSpec(3, device=device),
+            self.observation_spec = Composite(
+                observation=Unbounded(3, device=device),
                 device=device,
             )
-            self.action_spec = CompositeSpec(
-                action=UnboundedContinuousTensorSpec(3, device=device), device=device
+            self.action_spec = Composite(
+                action=Unbounded(3, device=device), device=device
             )
-            self.reward_spec = CompositeSpec(
-                reward=UnboundedContinuousTensorSpec(1, device=device), device=device
+            self.reward_spec = Composite(
+                reward=Unbounded(1, device=device), device=device
             )
             self.seed = 0
 
@@ -2785,6 +2842,7 @@ def test_backprop(device, maybe_fork_ParallelEnv, share_individual_td):
         assert not r_parallel.exclude("action").requires_grad
     finally:
         p_env.close()
+        del p_env
 
 
 @pytest.mark.skipif(not _has_gym, reason="Gym required for this test")
@@ -2808,20 +2866,22 @@ def test_non_td_policy():
 def test_parallel_another_ctx():
     from torch import multiprocessing as mp
 
-    sm = mp.get_start_method()
-    if sm == "spawn":
-        other_sm = "fork"
-    else:
-        other_sm = "spawn"
-    env = ParallelEnv(2, ContinuousActionVecMockEnv, mp_start_method=other_sm)
+    gc.collect()
+
     try:
+        sm = mp.get_start_method()
+        if sm == "spawn":
+            other_sm = "fork"
+        else:
+            other_sm = "spawn"
+        env = ParallelEnv(2, ContinuousActionVecMockEnv, mp_start_method=other_sm)
         assert env.rollout(3) is not None
         assert env._workers[0]._start_method == other_sm
     finally:
         try:
             env.close()
             del env
-        except RuntimeError:
+        except Exception:
             pass
 
 
@@ -3212,7 +3272,7 @@ class TestNonTensorEnv:
             return tensordict_reset
 
         def transform_observation_spec(self, observation_spec):
-            observation_spec["string"] = NonTensorSpec(())
+            observation_spec["string"] = NonTensor(())
             return observation_spec
 
     @pytest.mark.parametrize("batched", ["serial", "parallel"])
@@ -3236,6 +3296,48 @@ class TestNonTensorEnv:
         assert (s["next", "done"] == torch.tensor([[True], [False]])).all()
         assert s_["string"] == ["0", "6"]
         assert s["next", "string"] == ["6", "6"]
+
+
+class TestCustomEnvs:
+    def test_tictactoe_env(self):
+        torch.manual_seed(0)
+        env = TicTacToeEnv()
+        check_env_specs(env)
+        for _ in range(10):
+            r = env.rollout(10)
+            assert r.shape[-1] < 10
+            r = env.rollout(10, tensordict=TensorDict(batch_size=[5]))
+            assert r.shape[-1] < 10
+        r = env.rollout(
+            100, tensordict=TensorDict(batch_size=[5]), break_when_any_done=False
+        )
+        assert r.shape == (5, 100)
+
+    def test_tictactoe_env_single(self):
+        torch.manual_seed(0)
+        env = TicTacToeEnv(single_player=True)
+        check_env_specs(env)
+        for _ in range(10):
+            r = env.rollout(10)
+            assert r.shape[-1] < 6
+            r = env.rollout(10, tensordict=TensorDict(batch_size=[5]))
+            assert r.shape[-1] < 6
+        r = env.rollout(
+            100, tensordict=TensorDict(batch_size=[5]), break_when_any_done=False
+        )
+        assert r.shape == (5, 100)
+
+    def test_pendulum_env(self):
+        env = PendulumEnv(device=None)
+        assert env.device is None
+        env = PendulumEnv(device="cpu")
+        assert env.device == torch.device("cpu")
+        check_env_specs(env)
+        for _ in range(10):
+            r = env.rollout(10)
+            assert r.shape == torch.Size((10,))
+            r = env.rollout(10, tensordict=TensorDict(batch_size=[5]))
+            assert r.shape == torch.Size((5, 10))
 
 
 if __name__ == "__main__":

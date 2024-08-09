@@ -25,15 +25,6 @@ from torchrl.modules.distributions.utils import (
 )
 from torchrl.modules.utils import mappings
 
-__all__ = [
-    "NormalParamWrapper",
-    "TanhNormal",
-    "Delta",
-    "TanhDelta",
-    "TruncatedNormal",
-    "IndependentNormal",
-]
-
 # speeds up distribution construction
 D.Distribution.set_default_validate_args(False)
 
@@ -153,6 +144,10 @@ class NormalParamWrapper(nn.Module):
         scale_mapping: str = "biased_softplus_1.0",
         scale_lb: Number = 1e-4,
     ) -> None:
+        warnings.warn(
+            "The NormalParamWrapper class will be deprecated in v0.7 in favor of :class:`~tensordict.nn.NormalParamExtractor`.",
+            category=DeprecationWarning,
+        )
         super().__init__()
         self.operator = operator
         self.scale_mapping = scale_mapping
@@ -481,9 +476,10 @@ class TanhNormal(FasterTransformedDistribution):
     @property
     def mode(self):
         warnings.warn(
-            "This computation of the mode is based on the first-order Taylor expansion "
-            "of the transform around the normal mean value, which can be inaccurate. "
+            "This computation of the mode is based on an inaccurate estimation of the mode "
+            "given the base_dist mode. "
             "To use a more stable implementation of the mode, use dist.get_mode() method instead. "
+            "To silence this warning, consider using the DETERMINISTIC exploration_type."
             "This implementation will be removed in v0.6.",
             category=DeprecationWarning,
         )
@@ -758,7 +754,10 @@ class TanhDelta(FasterTransformedDistribution):
         raise AttributeError("TanhDelta mean has not analytical form.")
 
 
-def uniform_sample_delta(dist: Delta, size=None) -> torch.Tensor:
+def _uniform_sample_delta(dist: Delta, size=None) -> torch.Tensor:
     if size is None:
         size = torch.Size([])
     return torch.randn_like(dist.sample(size))
+
+
+uniform_sample_delta = _uniform_sample_delta

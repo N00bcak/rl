@@ -162,13 +162,13 @@ This demo was presented at ICML 2022 on the industry demo day.
 #       │   └── "trainers.py"
 #       └── "version.py"
 #
-# Unlike other domains, RL is less about media than *sota-implementations*. As such, it
+# Unlike other domains, RL is less about media than *algorithms*. As such, it
 # is harder to make truly independent components.
 #
 # What TorchRL is not:
 #
-# * a collection of sota-implementations: we do not intend to provide SOTA implementations of RL sota-implementations,
-#   but we provide these sota-implementations only as examples of how to use the library.
+# * a collection of algorithms: we do not intend to provide SOTA implementations of RL algorithms,
+#   but we provide these algorithms only as examples of how to use the library.
 #
 # * a research framework: modularity in TorchRL comes in two flavours. First, we try
 #   to build re-usable components, such that they can be easily swapped with each other.
@@ -572,10 +572,10 @@ print(tensordict_exp)
 # ------------------------------
 
 torch.manual_seed(0)
-from torchrl.data import BoundedTensorSpec
+from torchrl.data import Bounded
 from torchrl.modules import SafeModule
 
-spec = BoundedTensorSpec(-torch.ones(3), torch.ones(3))
+spec = Bounded(-torch.ones(3), torch.ones(3))
 base_module = nn.Linear(5, 3)
 module = SafeModule(
     module=base_module, spec=spec, in_keys=["obs"], out_keys=["action"], safe=True
@@ -605,10 +605,12 @@ from tensordict.nn import (
 ###############################################################################
 
 # Probabilistic modules
-from torchrl.modules import NormalParamWrapper, TanhNormal
+from torchrl.modules import NormalParamExtractor, TanhNormal
 
 td = TensorDict({"input": torch.randn(3, 5)}, [3])
-net = NormalParamWrapper(nn.Linear(5, 4))  # splits the output in loc and scale
+net = nn.Sequential(
+    nn.Linear(5, 4), NormalParamExtractor()
+)  # splits the output in loc and scale
 module = TensorDictModule(net, in_keys=["input"], out_keys=["loc", "scale"])
 td_module = ProbabilisticTensorDictSequential(
     module,
@@ -650,7 +652,7 @@ with set_exploration_type(ExplorationType.RANDOM):
     td_module(td)
     print("random:", td["action"])
 
-with set_exploration_type(ExplorationType.MODE):
+with set_exploration_type(ExplorationType.DETERMINISTIC):
     td_module(td)
     print("mode:", td["action"])
 

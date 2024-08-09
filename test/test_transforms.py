@@ -15,13 +15,13 @@ from copy import copy
 from functools import partial
 from sys import platform
 
-import numpy as np
 import pytest
 
 import tensordict.tensordict
 import torch
 
 from _utils_internal import (  # noqa
+    BREAKOUT_VERSIONED,
     dtype_fixture,
     get_default_devices,
     HALFCHEETAH_VERSIONED,
@@ -50,15 +50,15 @@ from tensordict.utils import _unravel_key_to_tuple, assert_allclose_td
 from torch import multiprocessing as mp, nn, Tensor
 from torchrl._utils import _replace_last, prod
 from torchrl.data import (
-    BoundedTensorSpec,
-    CompositeSpec,
-    DiscreteTensorSpec,
+    Bounded,
+    Categorical,
+    Composite,
     LazyTensorStorage,
     ReplayBuffer,
     TensorDictReplayBuffer,
     TensorSpec,
     TensorStorage,
-    UnboundedContinuousTensorSpec,
+    Unbounded,
 )
 from torchrl.envs import (
     ActionMask,
@@ -69,6 +69,7 @@ from torchrl.envs import (
     CenterCrop,
     ClipTransform,
     Compose,
+    Crop,
     DeviceCastTransform,
     DiscreteActionProjection,
     DMControlEnv,
@@ -248,7 +249,10 @@ class TestBinarizeReward(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -257,7 +261,10 @@ class TestBinarizeReward(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
@@ -267,7 +274,10 @@ class TestBinarizeReward(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("device", get_default_devices())
     @pytest.mark.parametrize("batch", [[], [4], [6, 4]])
@@ -572,7 +582,10 @@ class TestClipTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_serial_trans_env_check(self):
         def make_env():
@@ -604,7 +617,10 @@ class TestClipTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = ContinuousActionVecMockEnv()
@@ -650,7 +666,10 @@ class TestCatFrames(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -674,7 +693,10 @@ class TestCatFrames(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.skipif(not _has_gym, reason="Test executed on gym")
     @pytest.mark.parametrize("batched_class", [ParallelEnv, SerialEnv])
@@ -911,21 +933,17 @@ class TestCatFrames(TransformBase):
         )
         mins = [0, 0.5]
         maxes = [0.5, 1]
-        observation_spec = CompositeSpec(
+        observation_spec = Composite(
             {
-                key: BoundedTensorSpec(
-                    space_min, space_max, (1, 3, 3), dtype=torch.double
-                )
+                key: Bounded(space_min, space_max, (1, 3, 3), dtype=torch.double)
                 for key, space_min, space_max in zip(keys, mins, maxes)
             }
         )
 
         result = cat_frames.transform_observation_spec(observation_spec)
-        observation_spec = CompositeSpec(
+        observation_spec = Composite(
             {
-                key: BoundedTensorSpec(
-                    space_min, space_max, (1, 3, 3), dtype=torch.double
-                )
+                key: Bounded(space_min, space_max, (1, 3, 3), dtype=torch.double)
                 for key, space_min, space_max in zip(keys, mins, maxes)
             }
         )
@@ -1479,15 +1497,12 @@ class TestR3M(TransformBase):
     ):
         r3m_net = _R3MNet(in_keys, out_keys, model, del_keys)
 
-        observation_spec = CompositeSpec(
-            {key: BoundedTensorSpec(-1, 1, (3, 16, 16), device) for key in in_keys}
+        observation_spec = Composite(
+            {key: Bounded(-1, 1, (3, 16, 16), device) for key in in_keys}
         )
         if del_keys:
-            exp_ts = CompositeSpec(
-                {
-                    key: UnboundedContinuousTensorSpec(r3m_net.outdim, device)
-                    for key in out_keys
-                }
+            exp_ts = Composite(
+                {key: Unbounded(r3m_net.outdim, device) for key in out_keys}
             )
 
             observation_spec_out = r3m_net.transform_observation_spec(observation_spec)
@@ -1503,8 +1518,8 @@ class TestR3M(TransformBase):
             for key in in_keys:
                 ts_dict[key] = observation_spec[key]
             for key in out_keys:
-                ts_dict[key] = UnboundedContinuousTensorSpec(r3m_net.outdim, device)
-            exp_ts = CompositeSpec(ts_dict)
+                ts_dict[key] = Unbounded(r3m_net.outdim, device)
+            exp_ts = Composite(ts_dict)
 
             observation_spec_out = r3m_net.transform_observation_spec(observation_spec)
 
@@ -1613,15 +1628,18 @@ class TestStepCounter(TransformBase):
             assert "truncated" not in r.keys()
             assert ("next", "truncated") not in r.keys(True)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(ContinuousActionVecMockEnv(), StepCounter(10))
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_serial_trans_env_check(self):
         def make_env():
@@ -1630,14 +1648,17 @@ class TestStepCounter(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv), StepCounter(10)
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv), StepCounter(10)
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(SerialEnv(2, ContinuousActionVecMockEnv), StepCounter(10))
@@ -1907,7 +1928,7 @@ class TestCatTensors(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             ct = CatTensors(
                 in_keys=["observation", "observation_orig"],
@@ -1917,11 +1938,14 @@ class TestCatTensors(TransformBase):
             )
             return TransformedEnv(ContinuousActionVecMockEnv(), ct)
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         ct = CatTensors(
@@ -1934,7 +1958,7 @@ class TestCatTensors(TransformBase):
         env = TransformedEnv(SerialEnv(2, ContinuousActionVecMockEnv), ct)
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         ct = CatTensors(
             in_keys=["observation", "observation_orig"],
             out_key="observation_out",
@@ -1942,11 +1966,14 @@ class TestCatTensors(TransformBase):
             del_keys=False,
         )
 
-        env = TransformedEnv(ParallelEnv(2, ContinuousActionVecMockEnv), ct)
+        env = TransformedEnv(maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv), ct)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("device", get_default_devices())
     @pytest.mark.parametrize(
@@ -1985,12 +2012,12 @@ class TestCatTensors(TransformBase):
         assert tdc.get("dont touch").shape == dont_touch.shape
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(0, 1, (1, 4, 32))
+            observation_spec = Bounded(0, 1, (1, 4, 32))
             observation_spec = cattensors.transform_observation_spec(observation_spec)
             assert observation_spec.shape == torch.Size([1, len(keys) * 4, 32])
         else:
-            observation_spec = CompositeSpec(
-                {key: BoundedTensorSpec(0, 1, (1, 4, 32)) for key in keys}
+            observation_spec = Composite(
+                {key: Bounded(0, 1, (1, 4, 32)) for key in keys}
             )
             observation_spec = cattensors.transform_observation_spec(observation_spec)
             assert observation_spec[out_key].shape == torch.Size([1, len(keys) * 4, 32])
@@ -2102,6 +2129,213 @@ class TestCatTensors(TransformBase):
 
 
 @pytest.mark.skipif(not _has_tv, reason="no torchvision")
+class TestCrop(TransformBase):
+    @pytest.mark.parametrize("nchannels", [1, 3])
+    @pytest.mark.parametrize("batch", [[], [2], [2, 4]])
+    @pytest.mark.parametrize("h", [None, 21])
+    @pytest.mark.parametrize(
+        "keys", [["observation", ("some_other", "nested_key")], ["observation_pixels"]]
+    )
+    @pytest.mark.parametrize("device", get_default_devices())
+    def test_transform_no_env(self, keys, h, nchannels, batch, device):
+        torch.manual_seed(0)
+        dont_touch = torch.randn(*batch, nchannels, 16, 16, device=device)
+        crop = Crop(w=20, h=h, in_keys=keys)
+        if h is None:
+            h = 20
+        td = TensorDict(
+            {
+                key: torch.randn(*batch, nchannels, 16, 16, device=device)
+                for key in keys
+            },
+            batch,
+            device=device,
+        )
+        td.set("dont touch", dont_touch.clone())
+        crop(td)
+        for key in keys:
+            assert td.get(key).shape[-2:] == torch.Size([20, h])
+        assert (td.get("dont touch") == dont_touch).all()
+
+        if len(keys) == 1:
+            observation_spec = Bounded(-1, 1, (nchannels, 16, 16))
+            observation_spec = crop.transform_observation_spec(observation_spec)
+            assert observation_spec.shape == torch.Size([nchannels, 20, h])
+        else:
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (nchannels, 16, 16)) for key in keys}
+            )
+            observation_spec = crop.transform_observation_spec(observation_spec)
+            for key in keys:
+                assert observation_spec[key].shape == torch.Size([nchannels, 20, h])
+
+    @pytest.mark.parametrize("nchannels", [3])
+    @pytest.mark.parametrize("batch", [[2]])
+    @pytest.mark.parametrize("h", [None])
+    @pytest.mark.parametrize("keys", [["observation_pixels"]])
+    @pytest.mark.parametrize("device", get_default_devices())
+    def test_transform_model(self, keys, h, nchannels, batch, device):
+        torch.manual_seed(0)
+        dont_touch = torch.randn(*batch, nchannels, 16, 16, device=device)
+        crop = Crop(w=20, h=h, in_keys=keys)
+        if h is None:
+            h = 20
+        td = TensorDict(
+            {
+                key: torch.randn(*batch, nchannels, 16, 16, device=device)
+                for key in keys
+            },
+            batch,
+            device=device,
+        )
+        td.set("dont touch", dont_touch.clone())
+        model = nn.Sequential(crop, nn.Identity())
+        model(td)
+        for key in keys:
+            assert td.get(key).shape[-2:] == torch.Size([20, h])
+        assert (td.get("dont touch") == dont_touch).all()
+
+    @pytest.mark.parametrize("nchannels", [3])
+    @pytest.mark.parametrize("batch", [[2]])
+    @pytest.mark.parametrize("h", [None])
+    @pytest.mark.parametrize("keys", [["observation_pixels"]])
+    @pytest.mark.parametrize("device", get_default_devices())
+    def test_transform_compose(self, keys, h, nchannels, batch, device):
+        torch.manual_seed(0)
+        dont_touch = torch.randn(*batch, nchannels, 16, 16, device=device)
+        crop = Crop(w=20, h=h, in_keys=keys)
+        if h is None:
+            h = 20
+        td = TensorDict(
+            {
+                key: torch.randn(*batch, nchannels, 16, 16, device=device)
+                for key in keys
+            },
+            batch,
+            device=device,
+        )
+        td.set("dont touch", dont_touch.clone())
+        model = Compose(crop)
+        tdc = model(td.clone())
+        for key in keys:
+            assert tdc.get(key).shape[-2:] == torch.Size([20, h])
+        assert (tdc.get("dont touch") == dont_touch).all()
+        tdc = model._call(td.clone())
+        for key in keys:
+            assert tdc.get(key).shape[-2:] == torch.Size([20, h])
+        assert (tdc.get("dont touch") == dont_touch).all()
+
+    @pytest.mark.parametrize("nchannels", [3])
+    @pytest.mark.parametrize("batch", [[2]])
+    @pytest.mark.parametrize("h", [None])
+    @pytest.mark.parametrize("keys", [["observation_pixels"]])
+    @pytest.mark.parametrize("rbclass", [ReplayBuffer, TensorDictReplayBuffer])
+    def test_transform_rb(
+        self,
+        rbclass,
+        keys,
+        h,
+        nchannels,
+        batch,
+    ):
+        torch.manual_seed(0)
+        dont_touch = torch.randn(
+            *batch,
+            nchannels,
+            16,
+            16,
+        )
+        crop = Crop(w=20, h=h, in_keys=keys)
+        if h is None:
+            h = 20
+        td = TensorDict(
+            {
+                key: torch.randn(
+                    *batch,
+                    nchannels,
+                    16,
+                    16,
+                )
+                for key in keys
+            },
+            batch,
+        )
+        td.set("dont touch", dont_touch.clone())
+        rb = rbclass(storage=LazyTensorStorage(10))
+        rb.append_transform(crop)
+        rb.extend(td)
+        td = rb.sample(10)
+        for key in keys:
+            assert td.get(key).shape[-2:] == torch.Size([20, h])
+
+    def test_single_trans_env_check(self):
+        keys = ["pixels"]
+        ct = Compose(ToTensorImage(), Crop(w=20, h=20, in_keys=keys))
+        env = TransformedEnv(DiscreteActionConvMockEnvNumpy(), ct)
+        check_env_specs(env)
+
+    def test_serial_trans_env_check(self):
+        keys = ["pixels"]
+
+        def make_env():
+            ct = Compose(ToTensorImage(), Crop(w=20, h=20, in_keys=keys))
+            return TransformedEnv(DiscreteActionConvMockEnvNumpy(), ct)
+
+        env = SerialEnv(2, make_env)
+        check_env_specs(env)
+
+    def test_parallel_trans_env_check(self):
+        keys = ["pixels"]
+
+        def make_env():
+            ct = Compose(ToTensorImage(), Crop(w=20, h=20, in_keys=keys))
+            return TransformedEnv(DiscreteActionConvMockEnvNumpy(), ct)
+
+        env = ParallelEnv(2, make_env)
+        try:
+            check_env_specs(env)
+        finally:
+            try:
+                env.close()
+            except RuntimeError:
+                pass
+
+    def test_trans_serial_env_check(self):
+        keys = ["pixels"]
+        ct = Compose(ToTensorImage(), Crop(w=20, h=20, in_keys=keys))
+        env = TransformedEnv(SerialEnv(2, DiscreteActionConvMockEnvNumpy), ct)
+        check_env_specs(env)
+
+    def test_trans_parallel_env_check(self):
+        keys = ["pixels"]
+        ct = Compose(ToTensorImage(), Crop(w=20, h=20, in_keys=keys))
+        env = TransformedEnv(ParallelEnv(2, DiscreteActionConvMockEnvNumpy), ct)
+        try:
+            check_env_specs(env)
+        finally:
+            try:
+                env.close()
+            except RuntimeError:
+                pass
+
+    @pytest.mark.skipif(not _has_gym, reason="No Gym detected")
+    @pytest.mark.parametrize("out_key", [None, ["outkey"], [("out", "key")]])
+    def test_transform_env(self, out_key):
+        keys = ["pixels"]
+        ct = Compose(ToTensorImage(), Crop(out_keys=out_key, w=20, h=20, in_keys=keys))
+        env = TransformedEnv(GymEnv(PONG_VERSIONED()), ct)
+        td = env.reset()
+        if out_key is None:
+            assert td["pixels"].shape == torch.Size([3, 20, 20])
+        else:
+            assert td[out_key[0]].shape == torch.Size([3, 20, 20])
+        check_env_specs(env)
+
+    def test_transform_inverse(self):
+        raise pytest.skip("Crop does not have an inverse method.")
+
+
+@pytest.mark.skipif(not _has_tv, reason="no torchvision")
 class TestCenterCrop(TransformBase):
     @pytest.mark.parametrize("nchannels", [1, 3])
     @pytest.mark.parametrize("batch", [[], [2], [2, 4]])
@@ -2131,30 +2365,20 @@ class TestCenterCrop(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(-1, 1, (nchannels, 16, 16))
+            observation_spec = Bounded(-1, 1, (nchannels, 16, 16))
             observation_spec = cc.transform_observation_spec(observation_spec)
             assert observation_spec.shape == torch.Size([nchannels, 20, h])
         else:
-            observation_spec = CompositeSpec(
-                {key: BoundedTensorSpec(-1, 1, (nchannels, 16, 16)) for key in keys}
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (nchannels, 16, 16)) for key in keys}
             )
             observation_spec = cc.transform_observation_spec(observation_spec)
             for key in keys:
                 assert observation_spec[key].shape == torch.Size([nchannels, 20, h])
 
     @pytest.mark.parametrize("nchannels", [3])
-    @pytest.mark.parametrize(
-        "batch",
-        [
-            [2],
-        ],
-    )
-    @pytest.mark.parametrize(
-        "h",
-        [
-            None,
-        ],
-    )
+    @pytest.mark.parametrize("batch", [[2]])
+    @pytest.mark.parametrize("h", [None])
     @pytest.mark.parametrize("keys", [["observation_pixels"]])
     @pytest.mark.parametrize("device", get_default_devices())
     def test_transform_model(self, keys, h, nchannels, batch, device):
@@ -2179,18 +2403,8 @@ class TestCenterCrop(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
     @pytest.mark.parametrize("nchannels", [3])
-    @pytest.mark.parametrize(
-        "batch",
-        [
-            [2],
-        ],
-    )
-    @pytest.mark.parametrize(
-        "h",
-        [
-            None,
-        ],
-    )
+    @pytest.mark.parametrize("batch", [[2]])
+    @pytest.mark.parametrize("h", [None])
     @pytest.mark.parametrize("keys", [["observation_pixels"]])
     @pytest.mark.parametrize("device", get_default_devices())
     def test_transform_compose(self, keys, h, nchannels, batch, device):
@@ -2219,18 +2433,8 @@ class TestCenterCrop(TransformBase):
         assert (tdc.get("dont touch") == dont_touch).all()
 
     @pytest.mark.parametrize("nchannels", [3])
-    @pytest.mark.parametrize(
-        "batch",
-        [
-            [2],
-        ],
-    )
-    @pytest.mark.parametrize(
-        "h",
-        [
-            None,
-        ],
-    )
+    @pytest.mark.parametrize("batch", [[2]])
+    @pytest.mark.parametrize("h", [None])
     @pytest.mark.parametrize("keys", [["observation_pixels"]])
     @pytest.mark.parametrize("rbclass", [ReplayBuffer, TensorDictReplayBuffer])
     def test_transform_rb(
@@ -2298,7 +2502,10 @@ class TestCenterCrop(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         keys = ["pixels"]
@@ -2306,14 +2513,19 @@ class TestCenterCrop(TransformBase):
         env = TransformedEnv(SerialEnv(2, DiscreteActionConvMockEnvNumpy), ct)
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         keys = ["pixels"]
         ct = Compose(ToTensorImage(), CenterCrop(w=20, h=20, in_keys=keys))
-        env = TransformedEnv(ParallelEnv(2, DiscreteActionConvMockEnvNumpy), ct)
+        env = TransformedEnv(
+            maybe_fork_ParallelEnv(2, DiscreteActionConvMockEnvNumpy), ct
+        )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.skipif(not _has_gym, reason="No Gym detected")
     @pytest.mark.parametrize("out_key", [None, ["outkey"], [("out", "key")]])
@@ -2350,17 +2562,20 @@ class TestDiscreteActionProjection(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 DiscreteActionConvMockEnvNumpy(), DiscreteActionProjection(7, 10)
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -2369,15 +2584,18 @@ class TestDiscreteActionProjection(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
+            maybe_fork_ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
             DiscreteActionProjection(7, 10),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("action_key", ["action", ("nested", "stuff")])
     def test_transform_no_env(self, action_key):
@@ -2496,18 +2714,15 @@ class TestDoubleToFloat(TransformBase):
         assert td.get("dont touch").dtype != torch.double
 
         if len(keys_total) == 1 and len(keys_inv) and keys[0] == "action":
-            action_spec = BoundedTensorSpec(0, 1, (1, 3, 3), dtype=torch.double)
-            input_spec = CompositeSpec(
-                full_action_spec=CompositeSpec(action=action_spec), full_state_spec=None
+            action_spec = Bounded(0, 1, (1, 3, 3), dtype=torch.double)
+            input_spec = Composite(
+                full_action_spec=Composite(action=action_spec), full_state_spec=None
             )
             action_spec = double2float.transform_input_spec(input_spec)
             assert action_spec.dtype == torch.float
         else:
-            observation_spec = CompositeSpec(
-                {
-                    key: BoundedTensorSpec(0, 1, (1, 3, 3), dtype=torch.double)
-                    for key in keys
-                }
+            observation_spec = Composite(
+                {key: Bounded(0, 1, (1, 3, 3), dtype=torch.double) for key in keys}
             )
             observation_spec = double2float.transform_observation_spec(observation_spec)
             for key in keys:
@@ -2594,7 +2809,9 @@ class TestDoubleToFloat(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self, dtype_fixture):  # noqa: F811
+    def test_parallel_trans_env_check(
+        self, dtype_fixture, maybe_fork_ParallelEnv  # noqa: F811
+    ):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(dtype=torch.float64),
@@ -2602,10 +2819,13 @@ class TestDoubleToFloat(TransformBase):
             )
 
         try:
-            env = ParallelEnv(1, make_env)
+            env = maybe_fork_ParallelEnv(1, make_env)
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
             del env
 
     def test_trans_serial_env_check(self, dtype_fixture):  # noqa: F811
@@ -2615,15 +2835,22 @@ class TestDoubleToFloat(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self, dtype_fixture):  # noqa: F811
+    def test_trans_parallel_env_check(
+        self, dtype_fixture, maybe_fork_ParallelEnv  # noqa: F811
+    ):
         env = TransformedEnv(
-            ParallelEnv(2, lambda: ContinuousActionVecMockEnv(dtype=torch.float64)),
+            maybe_fork_ParallelEnv(
+                2, lambda: ContinuousActionVecMockEnv(dtype=torch.float64)
+            ),
             DoubleToFloat(in_keys=["observation"], in_keys_inv=["action"]),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self, dtype_fixture):  # noqa: F811
         t = DoubleToFloat(in_keys=["observation"], in_keys_inv=["action"])
@@ -2712,13 +2939,13 @@ class TestExcludeTransform(TransformBase):
     class EnvWithManyKeys(EnvBase):
         def __init__(self):
             super().__init__()
-            self.observation_spec = CompositeSpec(
-                a=UnboundedContinuousTensorSpec(3),
-                b=UnboundedContinuousTensorSpec(3),
-                c=UnboundedContinuousTensorSpec(3),
+            self.observation_spec = Composite(
+                a=Unbounded(3),
+                b=Unbounded(3),
+                c=Unbounded(3),
             )
-            self.reward_spec = UnboundedContinuousTensorSpec(1)
-            self.action_spec = UnboundedContinuousTensorSpec(2)
+            self.reward_spec = Unbounded(1)
+            self.action_spec = Unbounded(2)
 
         def _step(
             self,
@@ -2763,7 +2990,7 @@ class TestExcludeTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             t = Compose(
                 CatTensors(
@@ -2774,11 +3001,14 @@ class TestExcludeTransform(TransformBase):
             env = TransformedEnv(ContinuousActionVecMockEnv(), t)
             return env
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         t = Compose(
@@ -2790,18 +3020,21 @@ class TestExcludeTransform(TransformBase):
         env = TransformedEnv(SerialEnv(2, ContinuousActionVecMockEnv), t)
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         t = Compose(
             CatTensors(
                 in_keys=["observation"], out_key="observation_copy", del_keys=False
             ),
             ExcludeTransform("observation_copy"),
         )
-        env = TransformedEnv(ParallelEnv(2, ContinuousActionVecMockEnv), t)
+        env = TransformedEnv(maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv), t)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_env(self):
         base_env = TestExcludeTransform.EnvWithManyKeys()
@@ -2944,13 +3177,13 @@ class TestSelectTransform(TransformBase):
     class EnvWithManyKeys(EnvBase):
         def __init__(self):
             super().__init__()
-            self.observation_spec = CompositeSpec(
-                a=UnboundedContinuousTensorSpec(3),
-                b=UnboundedContinuousTensorSpec(3),
-                c=UnboundedContinuousTensorSpec(3),
+            self.observation_spec = Composite(
+                a=Unbounded(3),
+                b=Unbounded(3),
+                c=Unbounded(3),
             )
-            self.reward_spec = UnboundedContinuousTensorSpec(1)
-            self.action_spec = UnboundedContinuousTensorSpec(2)
+            self.reward_spec = Unbounded(1)
+            self.action_spec = Unbounded(2)
 
         def _step(
             self,
@@ -2995,7 +3228,7 @@ class TestSelectTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             t = Compose(
                 CatTensors(
@@ -3006,11 +3239,14 @@ class TestSelectTransform(TransformBase):
             env = TransformedEnv(ContinuousActionVecMockEnv(), t)
             return env
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         t = Compose(
@@ -3022,18 +3258,21 @@ class TestSelectTransform(TransformBase):
         env = TransformedEnv(SerialEnv(2, ContinuousActionVecMockEnv), t)
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         t = Compose(
             CatTensors(
                 in_keys=["observation"], out_key="observation_copy", del_keys=False
             ),
             SelectTransform("observation", "observation_orig"),
         )
-        env = TransformedEnv(ParallelEnv(2, ContinuousActionVecMockEnv), t)
+        env = TransformedEnv(maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv), t)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_env(self):
         base_env = TestExcludeTransform.EnvWithManyKeys()
@@ -3192,18 +3431,21 @@ class TestFlattenObservation(TransformBase):
 
         env = SerialEnv(2, make_env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             env = TransformedEnv(
                 DiscreteActionConvMockEnvNumpy(), FlattenObservation(-3, -1)
             )
             return env
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -3215,9 +3457,9 @@ class TestFlattenObservation(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
+            maybe_fork_ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
             FlattenObservation(
                 -3,
                 -1,
@@ -3226,7 +3468,10 @@ class TestFlattenObservation(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.skipif(not _has_tv, reason="no torchvision")
     @pytest.mark.parametrize("nchannels", [1, 3])
@@ -3257,15 +3502,12 @@ class TestFlattenObservation(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(-1, 1, (*size, nchannels, 16, 16))
+            observation_spec = Bounded(-1, 1, (*size, nchannels, 16, 16))
             observation_spec = flatten.transform_observation_spec(observation_spec)
             assert observation_spec.shape[-3] == expected_size
         else:
-            observation_spec = CompositeSpec(
-                {
-                    key: BoundedTensorSpec(-1, 1, (*size, nchannels, 16, 16))
-                    for key in keys
-                }
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (*size, nchannels, 16, 16)) for key in keys}
             )
             observation_spec = flatten.transform_observation_spec(observation_spec)
             for key in keys:
@@ -3300,15 +3542,12 @@ class TestFlattenObservation(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(-1, 1, (*size, nchannels, 16, 16))
+            observation_spec = Bounded(-1, 1, (*size, nchannels, 16, 16))
             observation_spec = flatten.transform_observation_spec(observation_spec)
             assert observation_spec.shape[-3] == expected_size
         else:
-            observation_spec = CompositeSpec(
-                {
-                    key: BoundedTensorSpec(-1, 1, (*size, nchannels, 16, 16))
-                    for key in keys
-                }
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (*size, nchannels, 16, 16)) for key in keys}
             )
             observation_spec = flatten.transform_observation_spec(observation_spec)
             for key in keys:
@@ -3372,16 +3611,19 @@ class TestFrameSkipTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             env = TransformedEnv(ContinuousActionVecMockEnv(), FrameSkipTransform(2))
             return env
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -3389,14 +3631,17 @@ class TestFrameSkipTransform(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv), FrameSkipTransform(2)
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv), FrameSkipTransform(2)
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self):
         t = FrameSkipTransform(2)
@@ -3539,12 +3784,12 @@ class TestGrayScale(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(-1, 1, (nchannels, 16, 16))
+            observation_spec = Bounded(-1, 1, (nchannels, 16, 16))
             observation_spec = gs.transform_observation_spec(observation_spec)
             assert observation_spec.shape == torch.Size([1, 16, 16])
         else:
-            observation_spec = CompositeSpec(
-                {key: BoundedTensorSpec(-1, 1, (nchannels, 16, 16)) for key in keys}
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (nchannels, 16, 16)) for key in keys}
             )
             observation_spec = gs.transform_observation_spec(observation_spec)
             for key in keys:
@@ -3576,12 +3821,12 @@ class TestGrayScale(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(-1, 1, (nchannels, 16, 16))
+            observation_spec = Bounded(-1, 1, (nchannels, 16, 16))
             observation_spec = gs.transform_observation_spec(observation_spec)
             assert observation_spec.shape == torch.Size([1, 16, 16])
         else:
-            observation_spec = CompositeSpec(
-                {key: BoundedTensorSpec(-1, 1, (nchannels, 16, 16)) for key in keys}
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (nchannels, 16, 16)) for key in keys}
             )
             observation_spec = gs.transform_observation_spec(observation_spec)
             for key in keys:
@@ -3609,7 +3854,7 @@ class TestGrayScale(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         out_keys = None
 
         def make_env():
@@ -3618,11 +3863,14 @@ class TestGrayScale(TransformBase):
                 Compose(ToTensorImage(), GrayScale(out_keys=out_keys)),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         out_keys = None
@@ -3632,16 +3880,19 @@ class TestGrayScale(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         out_keys = None
         env = TransformedEnv(
-            ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
+            maybe_fork_ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
             Compose(ToTensorImage(), GrayScale(out_keys=out_keys)),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("out_keys", [None, ["stuff"]])
     def test_transform_env(self, out_keys):
@@ -3709,15 +3960,18 @@ class TestNoop(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(ContinuousActionVecMockEnv(), NoopResetEnv())
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(SerialEnv(2, ContinuousActionVecMockEnv), NoopResetEnv())
@@ -3873,9 +4127,7 @@ class TestObservationNorm(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(
-        self,
-    ):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(),
@@ -3886,11 +4138,14 @@ class TestObservationNorm(TransformBase):
                 ),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(
         self,
@@ -3905,11 +4160,9 @@ class TestObservationNorm(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(
-        self,
-    ):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv),
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
             ObservationNorm(
                 loc=torch.zeros(7),
                 in_keys=["observation"],
@@ -3919,7 +4172,10 @@ class TestObservationNorm(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("standard_normal", [True, False])
     @pytest.mark.parametrize("in_key", ["observation", ("some_other", "observation")])
@@ -4170,9 +4426,7 @@ class TestObservationNorm(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(
-                0, 1, (nchannels, 16, 16), device=device
-            )
+            observation_spec = Bounded(0, 1, (nchannels, 16, 16), device=device)
             observation_spec = on.transform_observation_spec(observation_spec)
             if standard_normal:
                 assert (observation_spec.space.low == -loc / scale).all()
@@ -4182,11 +4436,8 @@ class TestObservationNorm(TransformBase):
                 assert (observation_spec.space.high == scale + loc).all()
 
         else:
-            observation_spec = CompositeSpec(
-                {
-                    key: BoundedTensorSpec(0, 1, (nchannels, 16, 16), device=device)
-                    for key in keys
-                }
+            observation_spec = Composite(
+                {key: Bounded(0, 1, (nchannels, 16, 16), device=device) for key in keys}
             )
             observation_spec = on.transform_observation_spec(observation_spec)
             for key in keys:
@@ -4207,15 +4458,11 @@ class TestObservationNorm(TransformBase):
     ):
         def make_env():
             base_env = ContinuousActionVecMockEnv(
-                observation_spec=CompositeSpec(
-                    observation=BoundedTensorSpec(
-                        low=1, high=1, shape=torch.Size([size])
-                    ),
-                    observation_orig=BoundedTensorSpec(
-                        low=1, high=1, shape=torch.Size([size])
-                    ),
+                observation_spec=Composite(
+                    observation=Bounded(low=1, high=1, shape=torch.Size([size])),
+                    observation_orig=Bounded(low=1, high=1, shape=torch.Size([size])),
                 ),
-                action_spec=BoundedTensorSpec(low=1, high=1, shape=torch.Size((size,))),
+                action_spec=Bounded(low=1, high=1, shape=torch.Size((size,))),
                 seed=0,
             )
             base_env.out_key = "observation"
@@ -4396,12 +4643,12 @@ class TestResize(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(-1, 1, (nchannels, 16, 16))
+            observation_spec = Bounded(-1, 1, (nchannels, 16, 16))
             observation_spec = resize.transform_observation_spec(observation_spec)
             assert observation_spec.shape == torch.Size([nchannels, 20, 21])
         else:
-            observation_spec = CompositeSpec(
-                {key: BoundedTensorSpec(-1, 1, (nchannels, 16, 16)) for key in keys}
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (nchannels, 16, 16)) for key in keys}
             )
             observation_spec = resize.transform_observation_spec(observation_spec)
             for key in keys:
@@ -4433,12 +4680,12 @@ class TestResize(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(-1, 1, (nchannels, 16, 16))
+            observation_spec = Bounded(-1, 1, (nchannels, 16, 16))
             observation_spec = resize.transform_observation_spec(observation_spec)
             assert observation_spec.shape == torch.Size([nchannels, 20, 21])
         else:
-            observation_spec = CompositeSpec(
-                {key: BoundedTensorSpec(-1, 1, (nchannels, 16, 16)) for key in keys}
+            observation_spec = Composite(
+                {key: Bounded(-1, 1, (nchannels, 16, 16)) for key in keys}
             )
             observation_spec = resize.transform_observation_spec(observation_spec)
             for key in keys:
@@ -4462,18 +4709,21 @@ class TestResize(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 DiscreteActionConvMockEnvNumpy(),
                 Compose(ToTensorImage(), Resize(20, 21, in_keys=["pixels"])),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -4482,15 +4732,18 @@ class TestResize(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
+            maybe_fork_ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
             Compose(ToTensorImage(), Resize(20, 21, in_keys=["pixels"])),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.skipif(not _has_gym, reason="No gym")
     @pytest.mark.parametrize("out_key", ["pixels", ("agents", "pixels")])
@@ -4539,17 +4792,20 @@ class TestRewardClipping(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(), RewardClipping(-0.1, 0.1)
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -4557,14 +4813,18 @@ class TestRewardClipping(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv), RewardClipping(-0.1, 0.1)
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
+            RewardClipping(-0.1, 0.1),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("reward_key", ["reward", ("agents", "reward")])
     def test_transform_no_env(self, reward_key):
@@ -4661,7 +4921,7 @@ class TestRewardScaling(TransformBase):
         assert (td.get("dont touch") == td_copy.get("dont touch")).all()
 
         if len(keys_total) == 1:
-            reward_spec = UnboundedContinuousTensorSpec(device=device)
+            reward_spec = Unbounded(device=device)
             reward_spec = reward_scaling.transform_reward_spec(reward_spec)
             assert reward_spec.shape == torch.Size([1])
 
@@ -4676,15 +4936,18 @@ class TestRewardScaling(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(ContinuousActionVecMockEnv(), RewardScaling(0.5, 1.5))
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -4692,14 +4955,18 @@ class TestRewardScaling(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv), RewardScaling(0.5, 1.5)
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
+            RewardScaling(0.5, 1.5),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("standard_normal", [True, False])
     def test_transform_no_env(self, standard_normal):
@@ -4804,20 +5071,23 @@ class TestRewardSum(TransformBase):
         r = env.rollout(4)
         assert r["next", "episode_reward"].unique().numel() > 1
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(),
                 Compose(RewardScaling(loc=-1, scale=1), RewardSum()),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
             r = env.rollout(4)
             assert r["next", "episode_reward"].unique().numel() > 1
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -4828,9 +5098,9 @@ class TestRewardSum(TransformBase):
         r = env.rollout(4)
         assert r["next", "episode_reward"].unique().numel() > 1
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv),
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
             Compose(RewardScaling(loc=-1, scale=1), RewardSum()),
         )
         try:
@@ -4838,7 +5108,10 @@ class TestRewardSum(TransformBase):
             r = env.rollout(4)
             assert r["next", "episode_reward"].unique().numel() > 1
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("has_in_keys,", [True, False])
     @pytest.mark.parametrize("reset_keys,", [None, ["_reset"] * 3])
@@ -5042,24 +5315,24 @@ class TestRewardSum(TransformBase):
 
         # test transform_observation_spec
         base_env = ContinuousActionVecMockEnv(
-            reward_spec=UnboundedContinuousTensorSpec(shape=(3, 16, 16)),
+            reward_spec=Unbounded(shape=(3, 16, 16)),
         )
         transfomed_env = TransformedEnv(base_env, RewardSum())
         transformed_observation_spec1 = transfomed_env.observation_spec
-        assert isinstance(transformed_observation_spec1, CompositeSpec)
+        assert isinstance(transformed_observation_spec1, Composite)
         assert "episode_reward" in transformed_observation_spec1.keys()
         assert "observation" in transformed_observation_spec1.keys()
 
         base_env = ContinuousActionVecMockEnv(
-            reward_spec=UnboundedContinuousTensorSpec(),
-            observation_spec=CompositeSpec(
-                observation=UnboundedContinuousTensorSpec(),
-                some_extra_observation=UnboundedContinuousTensorSpec(),
+            reward_spec=Unbounded(),
+            observation_spec=Composite(
+                observation=Unbounded(),
+                some_extra_observation=Unbounded(),
             ),
         )
         transfomed_env = TransformedEnv(base_env, RewardSum())
         transformed_observation_spec2 = transfomed_env.observation_spec
-        assert isinstance(transformed_observation_spec2, CompositeSpec)
+        assert isinstance(transformed_observation_spec2, Composite)
         assert "some_extra_observation" in transformed_observation_spec2.keys()
         assert "episode_reward" in transformed_observation_spec2.keys()
 
@@ -5401,15 +5674,13 @@ class TestUnsqueezeTransform(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(
-                -1, 1, (*batch, *size, nchannels, 16, 16)
-            )
+            observation_spec = Bounded(-1, 1, (*batch, *size, nchannels, 16, 16))
             observation_spec = unsqueeze.transform_observation_spec(observation_spec)
             assert observation_spec.shape == expected_size
         else:
-            observation_spec = CompositeSpec(
+            observation_spec = Composite(
                 {
-                    key: BoundedTensorSpec(-1, 1, (*batch, *size, nchannels, 16, 16))
+                    key: Bounded(-1, 1, (*batch, *size, nchannels, 16, 16))
                     for key in keys
                 }
             )
@@ -5480,18 +5751,21 @@ class TestUnsqueezeTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(),
                 UnsqueezeTransform(-1, in_keys=["observation"]),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -5500,15 +5774,18 @@ class TestUnsqueezeTransform(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv),
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
             UnsqueezeTransform(-1, in_keys=["observation"]),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("unsqueeze_dim", [1, -2])
     @pytest.mark.parametrize("nchannels", [1, 3])
@@ -5557,15 +5834,13 @@ class TestUnsqueezeTransform(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(
-                -1, 1, (*batch, *size, nchannels, 16, 16)
-            )
+            observation_spec = Bounded(-1, 1, (*batch, *size, nchannels, 16, 16))
             observation_spec = unsqueeze.transform_observation_spec(observation_spec)
             assert observation_spec.shape == expected_size
         else:
-            observation_spec = CompositeSpec(
+            observation_spec = Composite(
                 {
-                    key: BoundedTensorSpec(-1, 1, (*batch, *size, nchannels, 16, 16))
+                    key: Bounded(-1, 1, (*batch, *size, nchannels, 16, 16))
                     for key in keys
                 }
             )
@@ -5786,17 +6061,20 @@ class TestSqueezeTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(), self._circular_transform
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -5805,16 +6083,23 @@ class TestSqueezeTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv), self._circular_transform
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
+            self._circular_transform,
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("squeeze_dim", [1, -2])
     @pytest.mark.parametrize("nchannels", [1, 3])
@@ -5995,7 +6280,7 @@ class TestTargetReturn(TransformBase):
 
     @pytest.mark.parametrize("mode", ["reduce", "constant"])
     @pytest.mark.parametrize("device", get_default_devices())
-    def test_parallel_trans_env_check(self, mode, device):
+    def test_parallel_trans_env_check(self, mode, device, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(),
@@ -6003,11 +6288,14 @@ class TestTargetReturn(TransformBase):
                 device=device,
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("mode", ["reduce", "constant"])
     @pytest.mark.parametrize("device", get_default_devices())
@@ -6020,20 +6308,26 @@ class TestTargetReturn(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("mode", ["reduce", "constant"])
     @pytest.mark.parametrize("device", get_default_devices())
-    def test_trans_parallel_env_check(self, mode, device):
+    def test_trans_parallel_env_check(self, mode, device, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, DiscreteActionConvMockEnvNumpy).to(device),
+            maybe_fork_ParallelEnv(2, DiscreteActionConvMockEnvNumpy).to(device),
             TargetReturn(target_return=10.0, mode=mode),
             device=device,
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.skipif(not _has_gym, reason="Test executed on gym")
     @pytest.mark.parametrize("batched_class", [SerialEnv, ParallelEnv])
@@ -6142,7 +6436,7 @@ class TestToTensorImage(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(0, 255, (16, 16, 3), dtype=torch.uint8)
+            observation_spec = Bounded(0, 255, (16, 16, 3), dtype=torch.uint8)
             observation_spec = totensorimage.transform_observation_spec(
                 observation_spec
             )
@@ -6150,11 +6444,8 @@ class TestToTensorImage(TransformBase):
             assert (observation_spec.space.low == 0).all()
             assert (observation_spec.space.high == 1).all()
         else:
-            observation_spec = CompositeSpec(
-                {
-                    key: BoundedTensorSpec(0, 255, (16, 16, 3), dtype=torch.uint8)
-                    for key in keys
-                }
+            observation_spec = Composite(
+                {key: Bounded(0, 255, (16, 16, 3), dtype=torch.uint8) for key in keys}
             )
             observation_spec = totensorimage.transform_observation_spec(
                 observation_spec
@@ -6191,7 +6482,7 @@ class TestToTensorImage(TransformBase):
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(0, 255, (16, 16, 3), dtype=torch.uint8)
+            observation_spec = Bounded(0, 255, (16, 16, 3), dtype=torch.uint8)
             observation_spec = totensorimage.transform_observation_spec(
                 observation_spec
             )
@@ -6199,11 +6490,8 @@ class TestToTensorImage(TransformBase):
             assert (observation_spec.space.low == 0).all()
             assert (observation_spec.space.high == 1).all()
         else:
-            observation_spec = CompositeSpec(
-                {
-                    key: BoundedTensorSpec(0, 255, (16, 16, 3), dtype=torch.uint8)
-                    for key in keys
-                }
+            observation_spec = Composite(
+                {key: Bounded(0, 255, (16, 16, 3), dtype=torch.uint8) for key in keys}
             )
             observation_spec = totensorimage.transform_observation_spec(
                 observation_spec
@@ -6231,18 +6519,21 @@ class TestToTensorImage(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 DiscreteActionConvMockEnvNumpy(),
                 ToTensorImage(in_keys=["pixels"], out_keys=None),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -6251,15 +6542,18 @@ class TestToTensorImage(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
+            maybe_fork_ParallelEnv(2, DiscreteActionConvMockEnvNumpy),
             ToTensorImage(in_keys=["pixels"], out_keys=None),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("out_keys", [None, ["stuff"], [("nested", "stuff")]])
     @pytest.mark.parametrize("default_dtype", [torch.float32, torch.float64])
@@ -6340,20 +6634,46 @@ class TestTensorDictPrimer(TransformBase):
     def test_single_trans_env_check(self):
         env = TransformedEnv(
             ContinuousActionVecMockEnv(),
-            TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([3])),
+            TensorDictPrimer(mykey=Unbounded([3])),
         )
         check_env_specs(env)
         assert "mykey" in env.reset().keys()
         assert ("next", "mykey") in env.rollout(3).keys(True)
 
+    def test_nested_key_env(self):
+        env = MultiKeyCountingEnv()
+        env_obs_spec_prior_primer = env.observation_spec.clone()
+        env = TransformedEnv(
+            env,
+            TensorDictPrimer(
+                Composite(
+                    {
+                        "nested_1": Composite(
+                            {"mykey": Unbounded((env.nested_dim_1, 4))},
+                            shape=(env.nested_dim_1,),
+                        )
+                    }
+                ),
+                reset_key="_reset",
+            ),
+        )
+        check_env_specs(env)
+        env_obs_spec_post_primer = env.observation_spec.clone()
+        assert ("nested_1", "mykey") in env_obs_spec_post_primer.keys(True, True)
+        del env_obs_spec_post_primer[("nested_1", "mykey")]
+        assert env_obs_spec_post_primer == env_obs_spec_prior_primer
+
+        assert ("nested_1", "mykey") in env.reset().keys(True, True)
+        assert ("next", "nested_1", "mykey") in env.rollout(3).keys(True, True)
+
     def test_transform_no_env(self):
-        t = TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([3]))
+        t = TensorDictPrimer(mykey=Unbounded([3]))
         td = TensorDict({"a": torch.zeros(())}, [])
         t(td)
         assert "mykey" in td.keys()
 
     def test_transform_model(self):
-        t = TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([3]))
+        t = TensorDictPrimer(mykey=Unbounded([3]))
         model = nn.Sequential(t, nn.Identity())
         td = TensorDict({}, [])
         model(td)
@@ -6362,7 +6682,7 @@ class TestTensorDictPrimer(TransformBase):
     @pytest.mark.parametrize("rbclass", [ReplayBuffer, TensorDictReplayBuffer])
     def test_transform_rb(self, rbclass):
         batch_size = (2,)
-        t = TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([*batch_size, 3]))
+        t = TensorDictPrimer(mykey=Unbounded([*batch_size, 3]))
         rb = rbclass(storage=LazyTensorStorage(10))
         rb.append_transform(t)
         td = TensorDict({"a": torch.zeros(())}, [])
@@ -6374,31 +6694,34 @@ class TestTensorDictPrimer(TransformBase):
         raise pytest.skip("No inverse method for TensorDictPrimer")
 
     def test_transform_compose(self):
-        t = Compose(TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([3])))
+        t = Compose(TensorDictPrimer(mykey=Unbounded([3])))
         td = TensorDict({"a": torch.zeros(())}, [])
         t(td)
         assert "mykey" in td.keys()
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(),
-                TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([3])),
+                TensorDictPrimer(mykey=Unbounded([3])),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
             assert "mykey" in env.reset().keys()
             assert ("next", "mykey") in env.rollout(3).keys(True)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_serial_trans_env_check(self):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(),
-                TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([3])),
+                TensorDictPrimer(mykey=Unbounded([3])),
             )
 
         env = SerialEnv(2, make_env)
@@ -6407,12 +6730,15 @@ class TestTensorDictPrimer(TransformBase):
             assert "mykey" in env.reset().keys()
             assert ("next", "mykey") in env.rollout(3).keys(True)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv),
-            TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([2, 4])),
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
+            TensorDictPrimer(mykey=Unbounded([2, 4])),
         )
         try:
             check_env_specs(env)
@@ -6421,13 +6747,16 @@ class TestTensorDictPrimer(TransformBase):
             assert ("next", "mykey") in r.keys(True)
             assert r["next", "mykey"].shape == torch.Size([2, 3, 4])
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("spec_shape", [[4], [2, 4]])
     def test_trans_serial_env_check(self, spec_shape):
         env = TransformedEnv(
             SerialEnv(2, ContinuousActionVecMockEnv),
-            TensorDictPrimer(mykey=UnboundedContinuousTensorSpec(spec_shape)),
+            TensorDictPrimer(mykey=Unbounded(spec_shape)),
         )
         check_env_specs(env)
         assert "mykey" in env.reset().keys()
@@ -6441,8 +6770,8 @@ class TestTensorDictPrimer(TransformBase):
     @pytest.mark.parametrize(
         "spec",
         [
-            CompositeSpec(b=BoundedTensorSpec(-3, 3, [4])),
-            BoundedTensorSpec(-3, 3, [4]),
+            Composite(b=Bounded(-3, 3, [4])),
+            Bounded(-3, 3, [4]),
         ],
     )
     @pytest.mark.parametrize("random", [True, False])
@@ -6492,9 +6821,7 @@ class TestTensorDictPrimer(TransformBase):
         else:
             assert (tensordict_select == value).all()
 
-        if isinstance(spec, CompositeSpec) and any(
-            key != "action" for key in default_keys
-        ):
+        if isinstance(spec, Composite) and any(key != "action" for key in default_keys):
             for key in default_keys:
                 if key in ("action",):
                     continue
@@ -6509,7 +6836,7 @@ class TestTensorDictPrimer(TransformBase):
 
         env = TransformedEnv(
             batched_class(2, lambda: GymEnv(CARTPOLE_VERSIONED())),
-            TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([2, 4])),
+            TensorDictPrimer(mykey=Unbounded([2, 4])),
         )
         torch.manual_seed(0)
         env.set_seed(0)
@@ -6519,7 +6846,7 @@ class TestTensorDictPrimer(TransformBase):
             2,
             lambda: TransformedEnv(
                 GymEnv(CARTPOLE_VERSIONED()),
-                TensorDictPrimer(mykey=UnboundedContinuousTensorSpec([4])),
+                TensorDictPrimer(mykey=Unbounded([4])),
             ),
         )
         torch.manual_seed(0)
@@ -6533,9 +6860,7 @@ class TestTensorDictPrimer(TransformBase):
 
         env = TransformedEnv(
             ContinuousActionVecMockEnv(),
-            TensorDictPrimer(
-                mykey=UnboundedContinuousTensorSpec([3]), default_value=create_tensor
-            ),
+            TensorDictPrimer(mykey=Unbounded([3]), default_value=create_tensor),
         )
         check_env_specs(env)
         assert "mykey" in env.reset().keys()
@@ -6544,8 +6869,8 @@ class TestTensorDictPrimer(TransformBase):
     def test_dict_default_value(self):
 
         # Test with a dict of float default values
-        key1_spec = UnboundedContinuousTensorSpec([3])
-        key2_spec = UnboundedContinuousTensorSpec([3])
+        key1_spec = Unbounded([3])
+        key2_spec = Unbounded([3])
         env = TransformedEnv(
             ContinuousActionVecMockEnv(),
             TensorDictPrimer(
@@ -6568,8 +6893,8 @@ class TestTensorDictPrimer(TransformBase):
         assert (rollout_td.get(("next", "mykey2")) == 2.0).all()
 
         # Test with a dict of callable default values
-        key1_spec = UnboundedContinuousTensorSpec([3])
-        key2_spec = DiscreteTensorSpec(3, dtype=torch.int64)
+        key1_spec = Unbounded([3])
+        key2_spec = Categorical(3, dtype=torch.int64)
         env = TransformedEnv(
             ContinuousActionVecMockEnv(),
             TensorDictPrimer(
@@ -6670,8 +6995,8 @@ class TestTimeMaxPool(TransformBase):
         )
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
-        env = ParallelEnv(
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
+        env = maybe_fork_ParallelEnv(
             2,
             lambda: TransformedEnv(
                 ContinuousActionVecMockEnv(),
@@ -6684,7 +7009,10 @@ class TestTimeMaxPool(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -6696,9 +7024,9 @@ class TestTimeMaxPool(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, lambda: ContinuousActionVecMockEnv()),
+            maybe_fork_ParallelEnv(2, lambda: ContinuousActionVecMockEnv()),
             TimeMaxPool(
                 in_keys=["observation"],
                 T=3,
@@ -6707,7 +7035,10 @@ class TestTimeMaxPool(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.skipif(not _has_gym, reason="Test executed on gym")
     @pytest.mark.parametrize("batched_class", [ParallelEnv, SerialEnv])
@@ -6858,7 +7189,7 @@ class TestgSDE(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             state_dim = 7
             action_dim = 7
@@ -6867,11 +7198,14 @@ class TestgSDE(TransformBase):
                 gSDENoise(state_dim=state_dim, action_dim=action_dim),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("shape", [(), (2,)])
     def test_trans_serial_env_check(self, shape):
@@ -6884,19 +7218,25 @@ class TestgSDE(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         state_dim = 7
         action_dim = 7
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv),
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
             gSDENoise(state_dim=state_dim, action_dim=action_dim, shape=(2,)),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self):
         state_dim = 7
@@ -7367,13 +7707,11 @@ class TestVIP(TransformBase):
     ):
         vip_net = _VIPNet(in_keys, out_keys, model, del_keys)
 
-        observation_spec = CompositeSpec(
-            {key: BoundedTensorSpec(-1, 1, (3, 16, 16), device) for key in in_keys}
+        observation_spec = Composite(
+            {key: Bounded(-1, 1, (3, 16, 16), device) for key in in_keys}
         )
         if del_keys:
-            exp_ts = CompositeSpec(
-                {key: UnboundedContinuousTensorSpec(1024, device) for key in out_keys}
-            )
+            exp_ts = Composite({key: Unbounded(1024, device) for key in out_keys})
 
             observation_spec_out = vip_net.transform_observation_spec(observation_spec)
 
@@ -7388,8 +7726,8 @@ class TestVIP(TransformBase):
             for key in in_keys:
                 ts_dict[key] = observation_spec[key]
             for key in out_keys:
-                ts_dict[key] = UnboundedContinuousTensorSpec(1024, device)
-            exp_ts = CompositeSpec(ts_dict)
+                ts_dict[key] = Unbounded(1024, device)
+            exp_ts = Composite(ts_dict)
 
             observation_spec_out = vip_net.transform_observation_spec(observation_spec)
 
@@ -8082,8 +8420,8 @@ class TestTransformedEnv:
             env.transform.transform_reward_spec(env.base_env.full_reward_spec)
 
     def test_independent_obs_specs_from_shared_env(self):
-        obs_spec = CompositeSpec(
-            observation=BoundedTensorSpec(low=0, high=10, shape=torch.Size((1,)))
+        obs_spec = Composite(
+            observation=Bounded(low=0, high=10, shape=torch.Size((1,)))
         )
         base_env = ContinuousActionVecMockEnv(observation_spec=obs_spec)
         t1 = TransformedEnv(
@@ -8106,7 +8444,7 @@ class TestTransformedEnv:
         assert base_env.observation_spec["observation"].space.high == 10
 
     def test_independent_reward_specs_from_shared_env(self):
-        reward_spec = UnboundedContinuousTensorSpec()
+        reward_spec = Unbounded()
         base_env = ContinuousActionVecMockEnv(reward_spec=reward_spec)
         t1 = TransformedEnv(
             base_env, transform=RewardClipping(clamp_min=0, clamp_max=4)
@@ -8124,8 +8462,14 @@ class TestTransformedEnv:
         assert t2_reward_spec.space.low == -2
         assert t2_reward_spec.space.high == 2
 
-        assert base_env.reward_spec.space.low == -np.inf
-        assert base_env.reward_spec.space.high == np.inf
+        assert (
+            base_env.reward_spec.space.low
+            == torch.finfo(base_env.reward_spec.dtype).min
+        )
+        assert (
+            base_env.reward_spec.space.high
+            == torch.finfo(base_env.reward_spec.dtype).max
+        )
 
     def test_allow_done_after_reset(self):
         base_env = ContinuousActionVecMockEnv(allow_done_after_reset=True)
@@ -8253,13 +8597,13 @@ class TestTransforms:
         assert (td.get("dont touch") == dont_touch).all()
 
         if len(keys) == 1:
-            observation_spec = BoundedTensorSpec(0, 255, (nchannels, 16, 16))
+            observation_spec = Bounded(0, 255, (nchannels, 16, 16))
             # StepCounter does not want non composite specs
             observation_spec = compose[:2].transform_observation_spec(observation_spec)
             assert observation_spec.shape == torch.Size([nchannels * N, 16, 16])
         else:
-            observation_spec = CompositeSpec(
-                {key: BoundedTensorSpec(0, 255, (nchannels, 16, 16)) for key in keys}
+            observation_spec = Composite(
+                {key: Bounded(0, 255, (nchannels, 16, 16)) for key in keys}
             )
             observation_spec = compose.transform_observation_spec(observation_spec)
             for key in keys:
@@ -8733,7 +9077,7 @@ class TestRenameTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self, create_copy):
+    def test_parallel_trans_env_check(self, create_copy, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(),
@@ -8744,11 +9088,14 @@ class TestRenameTransform(TransformBase):
                 ),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
         def make_env():
             return TransformedEnv(
@@ -8762,11 +9109,14 @@ class TestRenameTransform(TransformBase):
                 ),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self, create_copy):
         def make_env():
@@ -8793,12 +9143,12 @@ class TestRenameTransform(TransformBase):
         )
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self, create_copy):
+    def test_trans_parallel_env_check(self, create_copy, maybe_fork_ParallelEnv):
         def make_env():
             return ContinuousActionVecMockEnv()
 
         env = TransformedEnv(
-            ParallelEnv(2, make_env),
+            maybe_fork_ParallelEnv(2, make_env),
             RenameTransform(
                 ["observation"],
                 ["stuff"],
@@ -8808,9 +9158,12 @@ class TestRenameTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
         env = TransformedEnv(
-            ParallelEnv(2, make_env),
+            maybe_fork_ParallelEnv(2, make_env),
             RenameTransform(
                 ["observation_orig"],
                 ["stuff"],
@@ -8822,7 +9175,10 @@ class TestRenameTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("mode", ["forward", "_call"])
     @pytest.mark.parametrize(
@@ -9011,17 +9367,20 @@ class TestInitTracker(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             env = CountingBatchedEnv(max_steps=torch.tensor([4, 5]), batch_size=[2])
             env = TransformedEnv(env, InitTracker())
             return env
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         def make_env():
@@ -9033,19 +9392,25 @@ class TestInitTracker(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             env = CountingBatchedEnv(max_steps=torch.tensor([4, 5]), batch_size=[2])
             return env
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         env = TransformedEnv(env, InitTracker())
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self):
         with pytest.raises(ValueError, match="init_key can only be of type str"):
@@ -9195,9 +9560,7 @@ class TestKLRewardTransform(TransformBase):
         return Compose(
             TensorDictPrimer(
                 primers={
-                    "sample_log_prob": UnboundedContinuousTensorSpec(
-                        shape=base_env.action_spec.shape[:-1]
-                    )
+                    "sample_log_prob": Unbounded(shape=base_env.action_spec.shape[:-1])
                 }
             ),
             transform,
@@ -9304,18 +9667,21 @@ class TestKLRewardTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         out_key = "reward"
 
         def make_env():
             base_env = self.envclass()
             return TransformedEnv(base_env, self._make_transform_env(out_key, base_env))
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         out_key = "reward"
@@ -9324,16 +9690,22 @@ class TestKLRewardTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         out_key = "reward"
-        base_env = ParallelEnv(2, self.envclass)
+        base_env = maybe_fork_ParallelEnv(2, self.envclass)
         env = TransformedEnv(base_env, self._make_transform_env(out_key, base_env))
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_model(self):
         actor = self._make_actor()
@@ -9422,20 +9794,18 @@ class TestKLRewardTransform(TransformBase):
 class TestActionMask(TransformBase):
     @property
     def _env_class(self):
-        from torchrl.data import BinaryDiscreteTensorSpec, DiscreteTensorSpec
+        from torchrl.data import Binary, Categorical
 
         class MaskedEnv(EnvBase):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
-                self.action_spec = DiscreteTensorSpec(4)
-                self.state_spec = CompositeSpec(
-                    action_mask=BinaryDiscreteTensorSpec(4, dtype=torch.bool)
+                self.action_spec = Categorical(4)
+                self.state_spec = Composite(action_mask=Binary(4, dtype=torch.bool))
+                self.observation_spec = Composite(
+                    obs=Unbounded(3),
+                    action_mask=Binary(4, dtype=torch.bool),
                 )
-                self.observation_spec = CompositeSpec(
-                    obs=UnboundedContinuousTensorSpec(3),
-                    action_mask=BinaryDiscreteTensorSpec(4, dtype=torch.bool),
-                )
-                self.reward_spec = UnboundedContinuousTensorSpec(1)
+                self.reward_spec = Unbounded(1)
 
             def _reset(self, tensordict):
                 td = self.observation_spec.rand()
@@ -9467,26 +9837,37 @@ class TestActionMask(TransformBase):
         env = SerialEnv(2, lambda: TransformedEnv(self._env_class(), ActionMask()))
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
-        env = ParallelEnv(2, lambda: TransformedEnv(self._env_class(), ActionMask()))
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
+        env = maybe_fork_ParallelEnv(
+            2, lambda: TransformedEnv(self._env_class(), ActionMask())
+        )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(SerialEnv(2, self._env_class), ActionMask())
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
-    def test_trans_parallel_env_check(self):
-        env = TransformedEnv(ParallelEnv(2, self._env_class), ActionMask())
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
+        env = TransformedEnv(maybe_fork_ParallelEnv(2, self._env_class), ActionMask())
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self):
         t = ActionMask()
@@ -9603,7 +9984,10 @@ class TestDeviceCastTransformPart(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("in_keys", ["observation"])
     @pytest.mark.parametrize("out_keys", [None, ["obs_device"]])
@@ -9654,7 +10038,10 @@ class TestDeviceCastTransformPart(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self):
         t = DeviceCastTransform("cpu:1", "cpu:0", in_keys=["a"], out_keys=["b"])
@@ -9783,18 +10170,21 @@ class TestDeviceCastTransformWhole(TransformBase):
         assert env.device == torch.device("cpu:1")
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return TransformedEnv(
                 ContinuousActionVecMockEnv(device="cpu:0"), DeviceCastTransform("cpu:1")
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         assert env.device == torch.device("cpu:1")
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         def make_env():
@@ -9804,16 +10194,21 @@ class TestDeviceCastTransformWhole(TransformBase):
         assert env.device == torch.device("cpu:1")
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             return ContinuousActionVecMockEnv(device="cpu:0")
 
-        env = TransformedEnv(ParallelEnv(2, make_env), DeviceCastTransform("cpu:1"))
+        env = TransformedEnv(
+            maybe_fork_ParallelEnv(2, make_env), DeviceCastTransform("cpu:1")
+        )
         assert env.device == torch.device("cpu:1")
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self):
         t = DeviceCastTransform("cpu:1", "cpu:0")
@@ -9895,8 +10290,8 @@ class TestPermuteTransform(TransformBase):
         )
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
-        env = ParallelEnv(
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
+        env = maybe_fork_ParallelEnv(
             2,
             lambda: TransformedEnv(
                 TestPermuteTransform.envclass(), TestPermuteTransform._get_permute()
@@ -9905,7 +10300,10 @@ class TestPermuteTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -9915,17 +10313,23 @@ class TestPermuteTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, TestPermuteTransform.envclass),
+            maybe_fork_ParallelEnv(2, TestPermuteTransform.envclass),
             TestPermuteTransform._get_permute(),
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     @pytest.mark.parametrize("batch", [[], [2], [2, 4]])
     def test_transform_compose(self, batch):
@@ -10019,22 +10423,22 @@ class TestPermuteTransform(TransformBase):
     reason="EndOfLifeTransform can only be tested when Gym is present.",
 )
 class TestEndOfLife(TransformBase):
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         def make():
             with set_gym_backend("gymnasium"):
-                return GymEnv("ALE/Breakout-v5")
+                return GymEnv(BREAKOUT_VERSIONED())
 
         with pytest.warns(UserWarning, match="The base_env is not a gym env"):
             with pytest.raises(AttributeError):
                 env = TransformedEnv(
-                    ParallelEnv(2, make), transform=EndOfLifeTransform()
+                    maybe_fork_ParallelEnv(2, make), transform=EndOfLifeTransform()
                 )
                 check_env_specs(env)
 
     def test_trans_serial_env_check(self):
         def make():
             with set_gym_backend("gymnasium"):
-                return GymEnv("ALE/Breakout-v5")
+                return GymEnv(BREAKOUT_VERSIONED())
 
         with pytest.warns(UserWarning, match="The base_env is not a gym env"):
             env = TransformedEnv(SerialEnv(2, make), transform=EndOfLifeTransform())
@@ -10045,7 +10449,7 @@ class TestEndOfLife(TransformBase):
     def test_single_trans_env_check(self, eol_key, lives_key):
         with set_gym_backend("gymnasium"):
             env = TransformedEnv(
-                GymEnv("ALE/Breakout-v5"),
+                GymEnv(BREAKOUT_VERSIONED()),
                 transform=EndOfLifeTransform(eol_key=eol_key, lives_key=lives_key),
             )
         check_env_specs(env)
@@ -10056,7 +10460,7 @@ class TestEndOfLife(TransformBase):
         def make():
             with set_gym_backend("gymnasium"):
                 return TransformedEnv(
-                    GymEnv("ALE/Breakout-v5"),
+                    GymEnv(BREAKOUT_VERSIONED()),
                     transform=EndOfLifeTransform(eol_key=eol_key, lives_key=lives_key),
                 )
 
@@ -10065,19 +10469,22 @@ class TestEndOfLife(TransformBase):
 
     @pytest.mark.parametrize("eol_key", ["eol_key", ("nested", "eol")])
     @pytest.mark.parametrize("lives_key", ["lives_key", ("nested", "lives")])
-    def test_parallel_trans_env_check(self, eol_key, lives_key):
+    def test_parallel_trans_env_check(self, eol_key, lives_key, maybe_fork_ParallelEnv):
         def make():
             with set_gym_backend("gymnasium"):
                 return TransformedEnv(
-                    GymEnv("ALE/Breakout-v5"),
+                    GymEnv(BREAKOUT_VERSIONED()),
                     transform=EndOfLifeTransform(eol_key=eol_key, lives_key=lives_key),
                 )
 
-        env = ParallelEnv(2, make)
+        env = maybe_fork_ParallelEnv(2, make)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_transform_no_env(self):
         t = EndOfLifeTransform()
@@ -10098,7 +10505,7 @@ class TestEndOfLife(TransformBase):
 
         with set_gym_backend("gymnasium"):
             env = TransformedEnv(
-                GymEnv("ALE/Breakout-v5"),
+                GymEnv(BREAKOUT_VERSIONED()),
                 transform=EndOfLifeTransform(eol_key=eol_key, lives_key=lives_key),
             )
         check_env_specs(env)
@@ -10465,7 +10872,7 @@ class TestSignTransform(TransformBase):
         assert data["reward"] == 2
         assert self.check_sign_applied(data["reward_sign"])
 
-    def test_parallel_trans_env_check(self):
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
         def make_env():
             env = ContinuousActionVecMockEnv()
             return TransformedEnv(
@@ -10476,11 +10883,14 @@ class TestSignTransform(TransformBase):
                 ),
             )
 
-        env = ParallelEnv(2, make_env)
+        env = maybe_fork_ParallelEnv(2, make_env)
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_serial_trans_env_check(self):
         def make_env():
@@ -10496,9 +10906,9 @@ class TestSignTransform(TransformBase):
         env = SerialEnv(2, make_env)
         check_env_specs(env)
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         env = TransformedEnv(
-            ParallelEnv(2, ContinuousActionVecMockEnv),
+            maybe_fork_ParallelEnv(2, ContinuousActionVecMockEnv),
             SignTransform(
                 in_keys=["observation", "reward"],
                 in_keys_inv=["observation_orig"],
@@ -10507,7 +10917,10 @@ class TestSignTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         env = TransformedEnv(
@@ -10520,34 +10933,35 @@ class TestSignTransform(TransformBase):
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
 
 class TestRemoveEmptySpecs(TransformBase):
     class DummyEnv(EnvBase):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.observation_spec = CompositeSpec(
-                observation=UnboundedContinuousTensorSpec((*self.batch_size, 3)),
-                other=CompositeSpec(
-                    another_other=CompositeSpec(shape=self.batch_size),
+            self.observation_spec = Composite(
+                observation=Unbounded((*self.batch_size, 3)),
+                other=Composite(
+                    another_other=Composite(shape=self.batch_size),
                     shape=self.batch_size,
                 ),
                 shape=self.batch_size,
             )
-            self.action_spec = UnboundedContinuousTensorSpec((*self.batch_size, 3))
-            self.done_spec = DiscreteTensorSpec(
-                2, (*self.batch_size, 1), dtype=torch.bool
-            )
+            self.action_spec = Unbounded((*self.batch_size, 3))
+            self.done_spec = Categorical(2, (*self.batch_size, 1), dtype=torch.bool)
             self.full_done_spec["truncated"] = self.full_done_spec["terminated"].clone()
-            self.reward_spec = CompositeSpec(
-                reward=UnboundedContinuousTensorSpec(*self.batch_size, 1),
-                other_reward=CompositeSpec(shape=self.batch_size),
+            self.reward_spec = Composite(
+                reward=Unbounded(*self.batch_size, 1),
+                other_reward=Composite(shape=self.batch_size),
                 shape=self.batch_size,
             )
-            self.state_spec = CompositeSpec(
-                state=CompositeSpec(
-                    sub=CompositeSpec(shape=self.batch_size), shape=self.batch_size
+            self.state_spec = Composite(
+                state=Composite(
+                    sub=Composite(shape=self.batch_size), shape=self.batch_size
                 ),
                 shape=self.batch_size,
             )
@@ -10574,14 +10988,17 @@ class TestRemoveEmptySpecs(TransformBase):
         env = SerialEnv(2, lambda: TransformedEnv(self.DummyEnv(), RemoveEmptySpecs()))
         check_env_specs(env)
 
-    def test_parallel_trans_env_check(self):
-        env = ParallelEnv(
+    def test_parallel_trans_env_check(self, maybe_fork_ParallelEnv):
+        env = maybe_fork_ParallelEnv(
             2, lambda: TransformedEnv(self.DummyEnv(), RemoveEmptySpecs())
         )
         try:
             check_env_specs(env)
         finally:
-            env.close()
+            try:
+                env.close()
+            except RuntimeError:
+                pass
 
     def test_trans_serial_env_check(self):
         with pytest.raises(
@@ -10589,11 +11006,13 @@ class TestRemoveEmptySpecs(TransformBase):
         ):
             env = TransformedEnv(SerialEnv(2, self.DummyEnv), RemoveEmptySpecs())
 
-    def test_trans_parallel_env_check(self):
+    def test_trans_parallel_env_check(self, maybe_fork_ParallelEnv):
         with pytest.raises(
             RuntimeError, match="The environment passed to ParallelEnv has empty specs"
         ):
-            env = TransformedEnv(ParallelEnv(2, self.DummyEnv), RemoveEmptySpecs())
+            env = TransformedEnv(
+                maybe_fork_ParallelEnv(2, self.DummyEnv), RemoveEmptySpecs()
+            )
 
     def test_transform_no_env(self):
         td = TensorDict({"a": {"b": {"c": {}}}}, [])
@@ -10706,6 +11125,7 @@ class TestMultiStepTransform:
             rollout = env.rollout(
                 2, auto_reset=False, tensordict=td, break_when_any_done=False
             ).contiguous()
+            assert rollout.shape[:-1] == env.batch_size
             assert "reward" not in rollout.keys()
             out = t._inv_call(rollout)
             td = rollout[..., -1]["next"].exclude("reward")
@@ -10747,11 +11167,9 @@ class TestBatchSizeTransform(TransformBase):
 
         def __init__(self):
             super().__init__()
-            self.observation_spec = CompositeSpec(
-                observation=UnboundedContinuousTensorSpec(3)
-            )
-            self.reward_spec = UnboundedContinuousTensorSpec(1)
-            self.action_spec = UnboundedContinuousTensorSpec(1)
+            self.observation_spec = Composite(observation=Unbounded(3))
+            self.reward_spec = Unbounded(1)
+            self.action_spec = Unbounded(1)
 
         def _reset(self, tensordict: TensorDictBase, **kwargs) -> TensorDictBase:
             tensordict_batch_size = (
@@ -11044,7 +11462,7 @@ class TestActionDiscretizer(TransformBase):
             )
             return env
 
-        env = ParallelEnv(2, make_env, mp_start_method="fork")
+        env = ParallelEnv(2, make_env, mp_start_method=mp_ctx)
         check_env_specs(env)
 
     @pytest.mark.parametrize("categorical", [True, False])
@@ -11057,7 +11475,7 @@ class TestActionDiscretizer(TransformBase):
     @pytest.mark.parametrize("categorical", [True, False])
     def test_trans_parallel_env_check(self, categorical):
         env = ParallelEnv(
-            2, ContinuousActionVecMockEnv, mp_start_method="fork"
+            2, ContinuousActionVecMockEnv, mp_start_method=mp_ctx
         ).append_transform(ActionDiscretizer(num_intervals=5, categorical=categorical))
         check_env_specs(env)
 

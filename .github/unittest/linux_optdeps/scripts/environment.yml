@@ -12,8 +12,9 @@ dependencies:
     - pytest-mock
     - pytest-instafail
     - pytest-rerunfailures
+    - pytest-timeout
     - expecttest
     - pyyaml
     - scipy
     - coverage
-    - ray<2.8.0
+    - ray

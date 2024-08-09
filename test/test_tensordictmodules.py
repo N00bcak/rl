@@ -11,11 +11,7 @@ from mocking_classes import CountingEnv, DiscreteActionVecMockEnv
 from tensordict import LazyStackedTensorDict, pad, TensorDict, unravel_key_list
 from tensordict.nn import InteractionType, TensorDictModule, TensorDictSequential
 from torch import nn
-from torchrl.data.tensor_specs import (
-    BoundedTensorSpec,
-    CompositeSpec,
-    UnboundedContinuousTensorSpec,
-)
+from torchrl.data.tensor_specs import Bounded, Composite, Unbounded
 from torchrl.envs import (
     CatFrames,
     Compose,
@@ -27,14 +23,14 @@ from torchrl.envs import (
 )
 from torchrl.envs.utils import set_exploration_type, step_mdp
 from torchrl.modules import (
-    AdditiveGaussianWrapper,
+    AdditiveGaussianModule,
     DecisionTransformerInferenceWrapper,
     DTActor,
     GRUModule,
     LSTMModule,
     MLP,
     MultiStepActorWrapper,
-    NormalParamWrapper,
+    NormalParamExtractor,
     OnlineDTActor,
     ProbabilisticActor,
     SafeModule,
@@ -119,8 +115,8 @@ class TestTDModule:
                 return self.linear_1(x), self.linear_2(x)
 
         spec_dict = {
-            "_": UnboundedContinuousTensorSpec((4,)),
-            "out_2": UnboundedContinuousTensorSpec((3,)),
+            "_": Unbounded((4,)),
+            "out_2": Unbounded((3,)),
         }
 
         # warning due to "_" in spec keys
@@ -129,7 +125,7 @@ class TestTDModule:
                 MultiHeadLinear(5, 4, 3),
                 in_keys=["input"],
                 out_keys=["_", "out_2"],
-                spec=CompositeSpec(**spec_dict),
+                spec=Composite(**spec_dict),
             )
 
     @pytest.mark.parametrize("safe", [True, False])
@@ -146,9 +142,9 @@ class TestTDModule:
         if spec_type is None:
             spec = None
         elif spec_type == "bounded":
-            spec = BoundedTensorSpec(-0.1, 0.1, 4)
+            spec = Bounded(-0.1, 0.1, 4)
         elif spec_type == "unbounded":
-            spec = UnboundedContinuousTensorSpec(4)
+            spec = Unbounded(4)
 
         if safe and spec is None:
             with pytest.raises(
@@ -189,7 +185,7 @@ class TestTDModule:
     @pytest.mark.parametrize("out_keys", [["loc", "scale"], ["loc_1", "scale_1"]])
     @pytest.mark.parametrize("lazy", [True, False])
     @pytest.mark.parametrize(
-        "exp_mode", [InteractionType.MODE, InteractionType.RANDOM, None]
+        "exp_mode", [InteractionType.DETERMINISTIC, InteractionType.RANDOM, None]
     )
     def test_stateful_probabilistic(self, safe, spec_type, lazy, exp_mode, out_keys):
         torch.manual_seed(0)
@@ -201,7 +197,7 @@ class TestTDModule:
 
         in_keys = ["in"]
         net = SafeModule(
-            module=NormalParamWrapper(net),
+            module=nn.Sequential(net, NormalParamExtractor()),
             spec=None,
             in_keys=in_keys,
             out_keys=out_keys,
@@ -210,9 +206,9 @@ class TestTDModule:
         if spec_type is None:
             spec = None
         elif spec_type == "bounded":
-            spec = BoundedTensorSpec(-0.1, 0.1, 4)
+            spec = Bounded(-0.1, 0.1, 4)
         elif spec_type == "unbounded":
-            spec = UnboundedContinuousTensorSpec(4)
+            spec = Unbounded(4)
         else:
             raise NotImplementedError
 
@@ -291,9 +287,9 @@ class TestTDSequence:
         if spec_type is None:
             spec = None
         elif spec_type == "bounded":
-            spec = BoundedTensorSpec(-0.1, 0.1, 4)
+            spec = Bounded(-0.1, 0.1, 4)
         elif spec_type == "unbounded":
-            spec = UnboundedContinuousTensorSpec(4)
+            spec = Unbounded(4)
 
         kwargs = {}
 
@@ -363,14 +359,14 @@ class TestTDSequence:
             net1 = nn.Linear(3, 4)
             dummy_net = nn.Linear(4, 4)
             net2 = nn.Linear(4, 4 * param_multiplier)
-        net2 = NormalParamWrapper(net2)
+        net2 = nn.Sequential(net2, NormalParamExtractor())
 
         if spec_type is None:
             spec = None
         elif spec_type == "bounded":
-            spec = BoundedTensorSpec(-0.1, 0.1, 4)
+            spec = Bounded(-0.1, 0.1, 4)
         elif spec_type == "unbounded":
-            spec = UnboundedContinuousTensorSpec(4)
+            spec = Unbounded(4)
         else:
             raise NotImplementedError
 
@@ -474,14 +470,14 @@ class TestTDSequence:
         net1 = nn.Linear(3, 4)
 
         net2 = nn.Linear(4, 4 * param_multiplier)
-        net2 = NormalParamWrapper(net2)
+        net2 = nn.Sequential(net2, NormalParamExtractor())
         net2 = SafeModule(net2, in_keys=["b"], out_keys=["loc", "scale"])
 
         net3 = nn.Linear(4, 4 * param_multiplier)
-        net3 = NormalParamWrapper(net3)
+        net3 = nn.Sequential(net3, NormalParamExtractor())
         net3 = SafeModule(net3, in_keys=["c"], out_keys=["loc", "scale"])
 
-        spec = BoundedTensorSpec(-0.1, 0.1, 4)
+        spec = Bounded(-0.1, 0.1, 4)
 
         kwargs = {"distribution_class": TanhNormal}
 
@@ -1340,7 +1336,7 @@ class TestGRUModule:
 def test_safe_specs():
 
     out_key = ("a", "b")
-    spec = CompositeSpec(CompositeSpec({out_key: UnboundedContinuousTensorSpec()}))
+    spec = Composite(Composite({out_key: Unbounded()}))
     original_spec = spec.clone()
     mod = SafeModule(
         module=nn.Linear(3, 1),
@@ -1354,26 +1350,26 @@ def test_safe_specs():
 
 def test_actor_critic_specs():
     action_key = ("agents", "action")
-    spec = CompositeSpec(
-        CompositeSpec({action_key: UnboundedContinuousTensorSpec(shape=(3,))})
-    )
+    spec = Composite(Composite({action_key: Unbounded(shape=(3,))}))
     policy_module = TensorDictModule(
         nn.Linear(3, 1),
         in_keys=[("agents", "observation")],
         out_keys=[action_key],
     )
     original_spec = spec.clone()
-    module = AdditiveGaussianWrapper(policy_module, spec=spec, action_key=action_key)
+    module = TensorDictSequential(
+        policy_module, AdditiveGaussianModule(spec=spec, action_key=action_key)
+    )
     value_module = ValueOperator(
         module=module,
         in_keys=[("agents", "observation"), action_key],
         out_keys=[("agents", "state_action_value")],
     )
     assert original_spec == spec
-    assert module.spec == spec
+    assert module[1].spec == spec
     DDPGLoss(actor_network=module, value_network=value_module)
     assert original_spec == spec
-    assert module.spec == spec
+    assert module[1].spec == spec
 
 
 def test_vmapmodule():

@@ -5,14 +5,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 
 from tensordict import TensorDict, TensorDictBase, TensorDictParams
 from tensordict.nn import dispatch, TensorDictModule
 from tensordict.utils import NestedKey
-from torchrl.data.tensor_specs import BoundedTensorSpec, CompositeSpec, TensorSpec
+from torchrl.data.tensor_specs import Bounded, Composite, TensorSpec
 
 from torchrl.envs.utils import step_mdp
 from torchrl.objectives.common import LossModule
@@ -34,8 +34,15 @@ class TD3Loss(LossModule):
 
     Args:
         actor_network (TensorDictModule): the actor to be trained
-        qvalue_network (TensorDictModule): a single Q-value network that will
-            be multiplicated as many times as needed.
+        qvalue_network (TensorDictModule): a single Q-value network or a list of
+            Q-value networks.
+            If a single instance of `qvalue_network` is provided, it will be duplicated ``num_qvalue_nets``
+            times. If a list of modules is passed, their
+            parameters will be stacked unless they share the same identity (in which case
+            the original parameter will be expanded).
+
+            .. warning:: When a list of parameters if passed, it will __not__ be compared against the policy parameters
+              and all the parameters will be considered as untied.
 
     Keyword Args:
         bounds (tuple of float, optional): the bounds of the action space.
@@ -66,7 +73,7 @@ class TD3Loss(LossModule):
             the actor.
         separate_losses (bool, optional): if ``True``, shared parameters between
             policy and critic will only be trained on the policy loss.
-            Defaults to ``False``, ie. gradients are propagated to shared
+            Defaults to ``False``, i.e., gradients are propagated to shared
             parameters for both policy and critic losses.
         reduction (str, optional): Specifies the reduction to apply to the output:
             ``"none"`` | ``"mean"`` | ``"sum"``. ``"none"``: no reduction will be applied,
@@ -76,14 +83,14 @@ class TD3Loss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import Actor, ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.td3 import TD3Loss
         >>> from tensordict import TensorDict
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
         >>> module = nn.Linear(n_obs, n_act)
         >>> actor = Actor(
         ...     module=module,
@@ -132,11 +139,11 @@ class TD3Loss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
+        >>> from torchrl.data import Bounded
         >>> from torchrl.modules.tensordict_module.actors import Actor, ValueOperator
         >>> from torchrl.objectives.td3 import TD3Loss
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
         >>> module = nn.Linear(n_obs, n_act)
         >>> actor = Actor(
         ...     module=module,
@@ -218,7 +225,7 @@ class TD3Loss(LossModule):
     def __init__(
         self,
         actor_network: TensorDictModule,
-        qvalue_network: TensorDictModule,
+        qvalue_network: TensorDictModule | List[TensorDictModule],
         *,
         action_spec: TensorSpec = None,
         bounds: Optional[Tuple[float]] = None,
@@ -276,7 +283,7 @@ class TD3Loss(LossModule):
                 f"but not both or none. Got bounds={bounds} and action_spec={action_spec}."
             )
         elif action_spec is not None:
-            if isinstance(action_spec, CompositeSpec):
+            if isinstance(action_spec, Composite):
                 if (
                     isinstance(self.tensor_keys.action, tuple)
                     and len(self.tensor_keys.action) > 1
@@ -289,9 +296,9 @@ class TD3Loss(LossModule):
                 action_spec = action_spec[self.tensor_keys.action][
                     (0,) * len(action_container_shape)
                 ]
-            if not isinstance(action_spec, BoundedTensorSpec):
+            if not isinstance(action_spec, Bounded):
                 raise ValueError(
-                    f"action_spec is not of type BoundedTensorSpec but {type(action_spec)}."
+                    f"action_spec is not of type Bounded but {type(action_spec)}."
                 )
             low = action_spec.space.low
             high = action_spec.space.high
@@ -310,13 +317,16 @@ class TD3Loss(LossModule):
         self.register_buffer("min_action", low)
         if gamma is not None:
             raise TypeError(_GAMMA_LMBDA_DEPREC_ERROR)
+        self._make_vmap()
+        self.reduction = reduction
+
+    def _make_vmap(self):
         self._vmap_qvalue_network00 = _vmap_func(
             self.qvalue_network, randomness=self.vmap_randomness
         )
         self._vmap_actor_network00 = _vmap_func(
             self.actor_network, randomness=self.vmap_randomness
         )
-        self.reduction = reduction
 
     def _forward_value_estimator_keys(self, **kwargs) -> None:
         if self._value_estimator is not None:

@@ -16,7 +16,7 @@ from mocking_classes import MockBatchedUnLockedEnv
 from packaging import version
 from tensordict import TensorDict
 from torch import nn
-from torchrl.data.tensor_specs import BoundedTensorSpec, CompositeSpec
+from torchrl.data.tensor_specs import Bounded, Composite
 from torchrl.modules import (
     CEMPlanner,
     DTActor,
@@ -34,7 +34,14 @@ from torchrl.modules import (
     VDNMixer,
 )
 from torchrl.modules.distributions.utils import safeatanh, safetanh
-from torchrl.modules.models import Conv3dNet, ConvNet, MLP, NoisyLazyLinear, NoisyLinear
+from torchrl.modules.models import (
+    BatchRenorm1d,
+    Conv3dNet,
+    ConvNet,
+    MLP,
+    NoisyLazyLinear,
+    NoisyLinear,
+)
 from torchrl.modules.models.decision_transformer import (
     _has_transformers,
     DecisionTransformer,
@@ -459,9 +466,7 @@ class TestDreamerComponents:
     @pytest.mark.parametrize("deter_size", [20, 30])
     @pytest.mark.parametrize("action_size", [3, 6])
     def test_rssm_prior(self, device, batch_size, stoch_size, deter_size, action_size):
-        action_spec = BoundedTensorSpec(
-            shape=(action_size,), dtype=torch.float32, low=-1, high=1
-        )
+        action_spec = Bounded(shape=(action_size,), dtype=torch.float32, low=-1, high=1)
         rssm_prior = RSSMPrior(
             action_spec,
             hidden_dim=stoch_size,
@@ -514,9 +519,7 @@ class TestDreamerComponents:
     def test_rssm_rollout(
         self, device, batch_size, temporal_size, stoch_size, deter_size, action_size
     ):
-        action_spec = BoundedTensorSpec(
-            shape=(action_size,), dtype=torch.float32, low=-1, high=1
-        )
+        action_spec = Bounded(shape=(action_size,), dtype=torch.float32, low=-1, high=1)
         rssm_prior = RSSMPrior(
             action_spec,
             hidden_dim=stoch_size,
@@ -643,10 +646,10 @@ class TestTanh:
         ):
             TanhModule(in_keys=["a", "b"], out_keys=["a"])
         with pytest.raises(ValueError, match=r"The minimum value \(-2\) provided"):
-            spec = BoundedTensorSpec(-1, 1, shape=())
+            spec = Bounded(-1, 1, shape=())
             TanhModule(in_keys=["act"], low=-2, spec=spec)
         with pytest.raises(ValueError, match=r"The maximum value \(-2\) provided to"):
-            spec = BoundedTensorSpec(-1, 1, shape=())
+            spec = Bounded(-1, 1, shape=())
             TanhModule(in_keys=["act"], high=-2, spec=spec)
         with pytest.raises(ValueError, match="Got high < low"):
             TanhModule(in_keys=["act"], high=-2, low=-1)
@@ -702,12 +705,12 @@ class TestTanh:
         if any(has_spec):
             spec = {}
             if has_spec[0]:
-                spec.update({real_out_keys[0]: BoundedTensorSpec(-2.0, 2.0, shape=())})
+                spec.update({real_out_keys[0]: Bounded(-2.0, 2.0, shape=())})
                 low, high = -2.0, 2.0
             if has_spec[1]:
-                spec.update({real_out_keys[1]: BoundedTensorSpec(-3.0, 3.0, shape=())})
+                spec.update({real_out_keys[1]: Bounded(-3.0, 3.0, shape=())})
                 low, high = None, None
-            spec = CompositeSpec(spec)
+            spec = Composite(spec)
         else:
             spec = None
             low, high = -2.0, 2.0
@@ -831,6 +834,110 @@ class TestMultiAgent:
     centralized={centralized},
     agent_dim={-2}\)"""
         assert re.match(pattern, str(mlp), re.DOTALL)
+
+    @retry(AssertionError, 5)
+    @pytest.mark.parametrize("n_agents", [1, 3])
+    @pytest.mark.parametrize("share_params", [True, False])
+    @pytest.mark.parametrize("centralized", [True, False])
+    @pytest.mark.parametrize("n_agent_inputs", [6, None])
+    @pytest.mark.parametrize("batch", [(4,), (4, 3), ()])
+    def test_multiagent_mlp_init(
+        self,
+        n_agents,
+        centralized,
+        share_params,
+        batch,
+        n_agent_inputs,
+        n_agent_outputs=2,
+    ):
+        torch.manual_seed(1)
+        mlp = MultiAgentMLP(
+            n_agent_inputs=n_agent_inputs,
+            n_agent_outputs=n_agent_outputs,
+            n_agents=n_agents,
+            centralized=centralized,
+            share_params=share_params,
+            depth=2,
+        )
+        for m in mlp.modules():
+            if isinstance(m, nn.Linear):
+                assert not isinstance(m.weight, nn.Parameter)
+                assert m.weight.device == torch.device("meta")
+                break
+        else:
+            raise RuntimeError("could not find a Linear module")
+        if n_agent_inputs is None:
+            n_agent_inputs = 6
+        td = self._get_mock_input_td(n_agents, n_agent_inputs, batch=batch)
+        obs = td.get(("agents", "observation"))
+        mlp(obs)
+        snet = mlp.get_stateful_net()
+        assert snet is not mlp._empty_net
+
+        def zero_inplace(mod):
+            if hasattr(mod, "weight"):
+                mod.weight.data *= 0
+            if hasattr(mod, "bias"):
+                mod.bias.data *= 0
+
+        snet.apply(zero_inplace)
+        assert (mlp.params == 0).all()
+
+        def one_outofplace(mod):
+            if hasattr(mod, "weight"):
+                mod.weight = nn.Parameter(torch.ones_like(mod.weight.data))
+            if hasattr(mod, "bias"):
+                mod.bias = nn.Parameter(torch.ones_like(mod.bias.data))
+
+        snet.apply(one_outofplace)
+        assert (mlp.params == 0).all()
+        mlp.from_stateful_net(snet)
+        assert (mlp.params == 1).all()
+
+    @retry(AssertionError, 5)
+    @pytest.mark.parametrize("n_agents", [3])
+    @pytest.mark.parametrize("share_params", [True])
+    @pytest.mark.parametrize("centralized", [True])
+    @pytest.mark.parametrize("n_agent_inputs", [6])
+    @pytest.mark.parametrize("batch", [(4,)])
+    @pytest.mark.parametrize("tdparams", [True, False])
+    def test_multiagent_mlp_tdparams(
+        self,
+        n_agents,
+        centralized,
+        share_params,
+        batch,
+        n_agent_inputs,
+        tdparams,
+        n_agent_outputs=2,
+    ):
+        torch.manual_seed(1)
+        mlp = MultiAgentMLP(
+            n_agent_inputs=n_agent_inputs,
+            n_agent_outputs=n_agent_outputs,
+            n_agents=n_agents,
+            centralized=centralized,
+            share_params=share_params,
+            depth=2,
+            use_td_params=tdparams,
+        )
+        if tdparams:
+            assert list(mlp._empty_net.parameters()) == []
+            assert list(mlp.params.parameters()) == list(mlp.parameters())
+        else:
+            assert list(mlp._empty_net.parameters()) == list(mlp.parameters())
+            assert not hasattr(mlp.params, "parameters")
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        elif torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            return
+        mlp = nn.Sequential(mlp)
+        mlp_device = mlp.to(device)
+        param_set = set(mlp.parameters())
+        for p in mlp[0].params.values(True, True):
+            assert p in param_set
 
     def test_multiagent_mlp_lazy(self):
         mlp = MultiAgentMLP(
@@ -1436,6 +1543,40 @@ def test_python_gru(device, bias, dropout, batch_first, num_layers):
     if dropout == 0.0:
         torch.testing.assert_close(output1, output2)
         torch.testing.assert_close(h1, h2)
+
+
+class TestBatchRenorm:
+    @pytest.mark.parametrize("num_steps", [0, 5])
+    @pytest.mark.parametrize("smooth", [False, True])
+    def test_batchrenorm(self, num_steps, smooth):
+        torch.manual_seed(0)
+        bn = torch.nn.BatchNorm1d(5, momentum=0.1, eps=1e-5)
+        brn = BatchRenorm1d(
+            5,
+            momentum=0.1,
+            eps=1e-5,
+            warmup_steps=num_steps,
+            max_d=10000,
+            max_r=10000,
+            smooth=smooth,
+        )
+        bn.train()
+        brn.train()
+        data_train = torch.randn(100, 5).split(25)
+        data_test = torch.randn(100, 5)
+        for i, d in enumerate(data_train):
+            b = bn(d)
+            a = brn(d)
+            if num_steps > 0 and (
+                (i < num_steps and not smooth) or (i == 0 and smooth)
+            ):
+                torch.testing.assert_close(a, b)
+            else:
+                assert not torch.isclose(a, b).all(), i
+
+        bn.eval()
+        brn.eval()
+        torch.testing.assert_close(bn(data_test), brn(data_test))
 
 
 if __name__ == "__main__":

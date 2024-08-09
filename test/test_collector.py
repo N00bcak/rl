@@ -68,12 +68,12 @@ from torchrl.collectors.collectors import (
 )
 from torchrl.collectors.utils import split_trajectories
 from torchrl.data import (
-    CompositeSpec,
+    Composite,
     LazyTensorStorage,
-    NonTensorSpec,
+    NonTensor,
     ReplayBuffer,
     TensorSpec,
-    UnboundedContinuousTensorSpec,
+    Unbounded,
 )
 from torchrl.envs import (
     EnvBase,
@@ -92,7 +92,7 @@ from torchrl.envs.utils import (
     PARTIAL_MISSING_ERR,
     RandomPolicy,
 )
-from torchrl.modules import Actor, OrnsteinUhlenbeckProcessWrapper, SafeModule
+from torchrl.modules import Actor, OrnsteinUhlenbeckProcessModule, SafeModule
 
 # torch.set_default_dtype(torch.double)
 IS_WINDOWS = sys.platform == "win32"
@@ -210,22 +210,16 @@ class TestCollectorDevices:
         def __init__(self, default_device):
             self.default_device = default_device
             super().__init__(device=None)
-            self.observation_spec = CompositeSpec(
-                observation=UnboundedContinuousTensorSpec((), device=default_device)
+            self.observation_spec = Composite(
+                observation=Unbounded((), device=default_device)
             )
-            self.reward_spec = UnboundedContinuousTensorSpec(1, device=default_device)
-            self.full_done_spec = CompositeSpec(
-                done=UnboundedContinuousTensorSpec(
-                    1, dtype=torch.bool, device=self.default_device
-                ),
-                truncated=UnboundedContinuousTensorSpec(
-                    1, dtype=torch.bool, device=self.default_device
-                ),
-                terminated=UnboundedContinuousTensorSpec(
-                    1, dtype=torch.bool, device=self.default_device
-                ),
+            self.reward_spec = Unbounded(1, device=default_device)
+            self.full_done_spec = Composite(
+                done=Unbounded(1, dtype=torch.bool, device=self.default_device),
+                truncated=Unbounded(1, dtype=torch.bool, device=self.default_device),
+                terminated=Unbounded(1, dtype=torch.bool, device=self.default_device),
             )
-            self.action_spec = UnboundedContinuousTensorSpec((), device=None)
+            self.action_spec = Unbounded((), device=None)
             assert self.device is None
             assert self.full_observation_spec is not None
             assert self.full_done_spec is not None
@@ -268,29 +262,17 @@ class TestCollectorDevices:
         def __init__(self, default_device):
             self.default_device = default_device
             super().__init__(device=self.default_device)
-            self.observation_spec = CompositeSpec(
-                observation=UnboundedContinuousTensorSpec(
-                    (), device=self.default_device
-                )
+            self.observation_spec = Composite(
+                observation=Unbounded((), device=self.default_device)
             )
-            self.reward_spec = UnboundedContinuousTensorSpec(
-                1, device=self.default_device
-            )
-            self.full_done_spec = CompositeSpec(
-                done=UnboundedContinuousTensorSpec(
-                    1, dtype=torch.bool, device=self.default_device
-                ),
-                truncated=UnboundedContinuousTensorSpec(
-                    1, dtype=torch.bool, device=self.default_device
-                ),
-                terminated=UnboundedContinuousTensorSpec(
-                    1, dtype=torch.bool, device=self.default_device
-                ),
+            self.reward_spec = Unbounded(1, device=self.default_device)
+            self.full_done_spec = Composite(
+                done=Unbounded(1, dtype=torch.bool, device=self.default_device),
+                truncated=Unbounded(1, dtype=torch.bool, device=self.default_device),
+                terminated=Unbounded(1, dtype=torch.bool, device=self.default_device),
                 device=self.default_device,
             )
-            self.action_spec = UnboundedContinuousTensorSpec(
-                (), device=self.default_device
-            )
+            self.action_spec = Unbounded((), device=self.default_device)
             assert self.device == _make_ordinal_device(
                 torch.device(self.default_device)
             )
@@ -1291,8 +1273,13 @@ def test_excluded_keys(collector_class, exclude, out_key):
         policy_module, in_keys=["observation"], out_keys=["action"]
     )
     copier = TensorDictModule(lambda x: x, in_keys=["observation"], out_keys=[out_key])
-    policy = TensorDictSequential(policy, copier)
-    policy_explore = OrnsteinUhlenbeckProcessWrapper(policy)
+    policy_explore = TensorDictSequential(
+        policy,
+        copier,
+        OrnsteinUhlenbeckProcessModule(
+            spec=Composite({key: None for key in policy.out_keys})
+        ),
+    )
 
     collector_kwargs = {
         "create_env_fn": make_env,
@@ -1363,12 +1350,12 @@ def test_collector_output_keys(
         ],
     }
     if explicit_spec:
-        hidden_spec = UnboundedContinuousTensorSpec((1, hidden_size))
-        policy_kwargs["spec"] = CompositeSpec(
-            action=UnboundedContinuousTensorSpec(),
+        hidden_spec = Unbounded((1, hidden_size))
+        policy_kwargs["spec"] = Composite(
+            action=Unbounded(),
             hidden1=hidden_spec,
             hidden2=hidden_spec,
-            next=CompositeSpec(hidden1=hidden_spec, hidden2=hidden_spec),
+            next=Composite(hidden1=hidden_spec, hidden2=hidden_spec),
         )
 
     policy = SafeModule(**policy_kwargs)
@@ -2165,15 +2152,9 @@ class TestUpdateParams:
         def __init__(self, device, batch_size=[]):  # noqa: B006
             super().__init__(batch_size=batch_size, device=device)
             self.state = torch.zeros(self.batch_size, device=device)
-            self.observation_spec = CompositeSpec(
-                state=UnboundedContinuousTensorSpec(shape=(), device=device)
-            )
-            self.action_spec = UnboundedContinuousTensorSpec(
-                shape=batch_size, device=device
-            )
-            self.reward_spec = UnboundedContinuousTensorSpec(
-                shape=(*batch_size, 1), device=device
-            )
+            self.observation_spec = Composite(state=Unbounded(shape=(), device=device))
+            self.action_spec = Unbounded(shape=batch_size, device=device)
+            self.reward_spec = Unbounded(shape=(*batch_size, 1), device=device)
 
         def _step(
             self,
@@ -2472,7 +2453,9 @@ def test_collector_reloading(collector_class):
     obs_spec = dummy_env.observation_spec["observation"]
     policy_module = nn.Linear(obs_spec.shape[-1], dummy_env.action_spec.shape[-1])
     policy = Actor(policy_module, spec=dummy_env.action_spec)
-    policy_explore = OrnsteinUhlenbeckProcessWrapper(policy)
+    policy_explore = TensorDictSequential(
+        policy, OrnsteinUhlenbeckProcessModule(spec=policy.spec)
+    )
 
     collector_kwargs = {
         "create_env_fn": make_env,
@@ -2678,7 +2661,7 @@ class TestCollectorsNonTensor:
         def transform_observation_spec(
             self, observation_spec: TensorSpec
         ) -> TensorSpec:
-            observation_spec["nt"] = NonTensorSpec(shape=())
+            observation_spec["nt"] = NonTensor(shape=())
             return observation_spec
 
     @classmethod

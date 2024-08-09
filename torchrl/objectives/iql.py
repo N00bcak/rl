@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 from tensordict import TensorDict, TensorDictBase, TensorDictParams
@@ -37,6 +37,14 @@ class IQLLoss(LossModule):
     Args:
         actor_network (ProbabilisticActor): stochastic actor
         qvalue_network (TensorDictModule): Q(s, a) parametric model
+            If a single instance of `qvalue_network` is provided, it will be duplicated ``num_qvalue_nets``
+            times. If a list of modules is passed, their
+            parameters will be stacked unless they share the same identity (in which case
+            the original parameter will be expanded).
+
+            .. warning:: When a list of parameters if passed, it will __not__ be compared against the policy parameters
+              and all the parameters will be considered as untied.
+
         value_network (TensorDictModule, optional): V(s) parametric model.
 
     Keyword Args:
@@ -55,7 +63,7 @@ class IQLLoss(LossModule):
             buffer usage). Default is `"td_error"`.
         separate_losses (bool, optional): if ``True``, shared parameters between
             policy and critic will only be trained on the policy loss.
-            Defaults to ``False``, ie. gradients are propagated to shared
+            Defaults to ``False``, i.e., gradients are propagated to shared
             parameters for both policy and critic losses.
         reduction (str, optional): Specifies the reduction to apply to the output:
             ``"none"`` | ``"mean"`` | ``"sum"``. ``"none"``: no reduction will be applied,
@@ -65,15 +73,15 @@ class IQLLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.iql import IQLLoss
         >>> from tensordict import TensorDict
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -128,15 +136,15 @@ class IQLLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.iql import IQLLoss
         >>> _ = torch.manual_seed(42)
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -247,7 +255,7 @@ class IQLLoss(LossModule):
     def __init__(
         self,
         actor_network: ProbabilisticActor,
-        qvalue_network: TensorDictModule,
+        qvalue_network: TensorDictModule | List[TensorDictModule],
         value_network: Optional[TensorDictModule],
         *,
         num_qvalue_nets: int = 2,
@@ -310,10 +318,13 @@ class IQLLoss(LossModule):
         self.loss_function = loss_function
         if gamma is not None:
             raise TypeError(_GAMMA_LMBDA_DEPREC_ERROR)
+        self._make_vmap()
+        self.reduction = reduction
+
+    def _make_vmap(self):
         self._vmap_qvalue_networkN0 = _vmap_func(
             self.qvalue_network, (None, 0), randomness=self.vmap_randomness
         )
-        self.reduction = reduction
 
     @property
     def device(self) -> torch.device:
@@ -530,9 +541,9 @@ class DiscreteIQLLoss(IQLLoss):
     Keyword Args:
         action_space (str or TensorSpec): Action space. Must be one of
                 ``"one-hot"``, ``"mult_one_hot"``, ``"binary"`` or ``"categorical"``,
-                or an instance of the corresponding specs (:class:`torchrl.data.OneHotDiscreteTensorSpec`,
-                :class:`torchrl.data.MultiOneHotDiscreteTensorSpec`,
-                :class:`torchrl.data.BinaryDiscreteTensorSpec` or :class:`torchrl.data.DiscreteTensorSpec`).
+                or an instance of the corresponding specs (:class:`torchrl.data.OneHot`,
+                :class:`torchrl.data.MultiOneHot`,
+                :class:`torchrl.data.Binary` or :class:`torchrl.data.Categorical`).
         num_qvalue_nets (integer, optional): number of Q-Value networks used.
             Defaults to ``2``.
         loss_function (str, optional): loss function to be used with
@@ -548,7 +559,7 @@ class DiscreteIQLLoss(IQLLoss):
             buffer usage). Default is `"td_error"`.
         separate_losses (bool, optional): if ``True``, shared parameters between
             policy and critic will only be trained on the policy loss.
-            Defaults to ``False``, ie. gradients are propagated to shared
+            Defaults to ``False``, i.e., gradients are propagated to shared
             parameters for both policy and critic losses.
         reduction (str, optional): Specifies the reduction to apply to the output:
             ``"none"`` | ``"mean"`` | ``"sum"``. ``"none"``: no reduction will be applied,
@@ -558,14 +569,14 @@ class DiscreteIQLLoss(IQLLoss):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data.tensor_specs import OneHotDiscreteTensorSpec
+        >>> from torchrl.data.tensor_specs import OneHot
         >>> from torchrl.modules.distributions.discrete import OneHotCategorical
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.iql import DiscreteIQLLoss
         >>> from tensordict import TensorDict
         >>> n_act, n_obs = 4, 3
-        >>> spec = OneHotDiscreteTensorSpec(n_act)
+        >>> spec = OneHot(n_act)
         >>> module = SafeModule(nn.Linear(n_obs, n_act), in_keys=["observation"], out_keys=["logits"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -616,14 +627,14 @@ class DiscreteIQLLoss(IQLLoss):
         >>> import torch
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data.tensor_specs import OneHotDiscreteTensorSpec
+        >>> from torchrl.data.tensor_specs import OneHot
         >>> from torchrl.modules.distributions.discrete import OneHotCategorical
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.iql import DiscreteIQLLoss
         >>> _ = torch.manual_seed(42)
         >>> n_act, n_obs = 4, 3
-        >>> spec = OneHotDiscreteTensorSpec(n_act)
+        >>> spec = OneHot(n_act)
         >>> module = SafeModule(nn.Linear(n_obs, n_act), in_keys=["observation"], out_keys=["logits"])
         >>> actor = ProbabilisticActor(
         ...     module=module,

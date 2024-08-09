@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 from __future__ import annotations
 
-import warnings
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -23,7 +22,7 @@ from torch import nn
 from torch.distributions import Categorical
 
 from torchrl._utils import _replace_last
-from torchrl.data.tensor_specs import CompositeSpec, TensorSpec
+from torchrl.data.tensor_specs import Composite, TensorSpec
 from torchrl.data.utils import _process_action_space_spec
 from torchrl.modules.tensordict_module.common import DistributionalDQNnet, SafeModule
 from torchrl.modules.tensordict_module.probabilistic import (
@@ -38,8 +37,8 @@ class Actor(SafeModule):
 
     The Actor class comes with default values for the out_keys (``["action"]``)
     and if the spec is provided but not as a
-    :class:`~torchrl.data.CompositeSpec` object, it will be
-    automatically translated into ``spec = CompositeSpec(action=spec)``.
+    :class:`~torchrl.data.Composite` object, it will be
+    automatically translated into ``spec = Composite(action=spec)``.
 
     Args:
         module (nn.Module): a :class:`~torch.nn.Module` used to map the input to
@@ -71,11 +70,11 @@ class Actor(SafeModule):
     Examples:
         >>> import torch
         >>> from tensordict import TensorDict
-        >>> from torchrl.data import UnboundedContinuousTensorSpec
+        >>> from torchrl.data import Unbounded
         >>> from torchrl.modules import Actor
         >>> torch.manual_seed(0)
         >>> td = TensorDict({"observation": torch.randn(3, 4)}, [3,])
-        >>> action_spec = UnboundedContinuousTensorSpec(4)
+        >>> action_spec = Unbounded(4)
         >>> module = torch.nn.Linear(4, 4)
         >>> td_module = Actor(
         ...    module=module,
@@ -112,9 +111,9 @@ class Actor(SafeModule):
         if (
             "action" in out_keys
             and spec is not None
-            and not isinstance(spec, CompositeSpec)
+            and not isinstance(spec, Composite)
         ):
-            spec = CompositeSpec(action=spec)
+            spec = Composite(action=spec)
 
         super().__init__(
             module,
@@ -129,8 +128,8 @@ class ProbabilisticActor(SafeProbabilisticTensorDictSequential):
     """General class for probabilistic actors in RL.
 
     The Actor class comes with default values for the out_keys (["action"])
-    and if the spec is provided but not as a CompositeSpec object, it will be
-    automatically translated into :obj:`spec = CompositeSpec(action=spec)`
+    and if the spec is provided but not as a Composite object, it will be
+    automatically translated into :obj:`spec = Composite(action=spec)`
 
     Args:
         module (nn.Module): a :class:`torch.nn.Module` used to map the input to
@@ -206,12 +205,12 @@ class ProbabilisticActor(SafeProbabilisticTensorDictSequential):
         >>> import torch
         >>> from tensordict import TensorDict
         >>> from tensordict.nn import TensorDictModule
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules import ProbabilisticActor, NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules import ProbabilisticActor, NormalParamExtractor, TanhNormal
         >>> td = TensorDict({"observation": torch.randn(3, 4)}, [3,])
-        >>> action_spec = BoundedTensorSpec(shape=torch.Size([4]),
+        >>> action_spec = Bounded(shape=torch.Size([4]),
         ...    low=-1, high=1)
-        >>> module = NormalParamWrapper(torch.nn.Linear(4, 8))
+        >>> module = nn.Sequential(torch.nn.Linear(4, 8), NormalParamExtractor())
         >>> tensordict_module = TensorDictModule(module, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> td_module = ProbabilisticActor(
         ...    module=tensordict_module,
@@ -383,12 +382,8 @@ class ProbabilisticActor(SafeProbabilisticTensorDictSequential):
                     out_keys = list(distribution_map.keys())
             else:
                 out_keys = ["action"]
-        if (
-            len(out_keys) == 1
-            and spec is not None
-            and not isinstance(spec, CompositeSpec)
-        ):
-            spec = CompositeSpec({out_keys[0]: spec})
+        if len(out_keys) == 1 and spec is not None and not isinstance(spec, Composite):
+            spec = Composite({out_keys[0]: spec})
 
         super().__init__(
             module,
@@ -425,7 +420,7 @@ class ValueOperator(TensorDictModule):
         >>> import torch
         >>> from tensordict import TensorDict
         >>> from torch import nn
-        >>> from torchrl.data import UnboundedContinuousTensorSpec
+        >>> from torchrl.data import Unbounded
         >>> from torchrl.modules import ValueOperator
         >>> td = TensorDict({"observation": torch.randn(3, 4), "action": torch.randn(3, 2)}, [3,])
         >>> class CustomModule(nn.Module):
@@ -578,22 +573,22 @@ class QValueModule(TensorDictModuleBase):
             )
         self.out_keys = out_keys
         action_key = out_keys[0]
-        if not isinstance(spec, CompositeSpec):
-            spec = CompositeSpec({action_key: spec})
+        if not isinstance(spec, Composite):
+            spec = Composite({action_key: spec})
         super().__init__()
         self.register_spec(safe=safe, spec=spec)
 
     register_spec = SafeModule.register_spec
 
     @property
-    def spec(self) -> CompositeSpec:
+    def spec(self) -> Composite:
         return self._spec
 
     @spec.setter
-    def spec(self, spec: CompositeSpec) -> None:
-        if not isinstance(spec, CompositeSpec):
+    def spec(self, spec: Composite) -> None:
+        if not isinstance(spec, Composite):
             raise RuntimeError(
-                f"Trying to set an object of type {type(spec)} as a tensorspec but expected a CompositeSpec instance."
+                f"Trying to set an object of type {type(spec)} as a tensorspec but expected a Composite instance."
             )
         self._spec = spec
 
@@ -892,13 +887,13 @@ class QValueHook:
         >>> import torch
         >>> from tensordict import TensorDict
         >>> from torch import nn
-        >>> from torchrl.data import OneHotDiscreteTensorSpec
+        >>> from torchrl.data import OneHot
         >>> from torchrl.modules.tensordict_module.actors import QValueHook, Actor
         >>> td = TensorDict({'observation': torch.randn(5, 4)}, [5])
         >>> module = nn.Linear(4, 4)
         >>> hook = QValueHook("one_hot")
         >>> module.register_forward_hook(hook)
-        >>> action_spec = OneHotDiscreteTensorSpec(4)
+        >>> action_spec = OneHot(4)
         >>> qvalue_actor = Actor(module=module, spec=action_spec, out_keys=["action", "action_value"])
         >>> td = qvalue_actor(td)
         >>> print(td)
@@ -922,10 +917,9 @@ class QValueHook:
         out_keys: Optional[Sequence[NestedKey]] = None,
     ):
         if isinstance(action_space, TensorSpec):
-            warnings.warn(
-                "Using specs in action_space will be deprecated in v0.4.0,"
-                " please use the 'spec' argument if you want to provide an action spec",
-                category=DeprecationWarning,
+            raise RuntimeError(
+                "Using specs in action_space is deprecated. "
+                "Please use the 'spec' argument if you want to provide an action spec"
             )
         action_space, _ = _process_action_space_spec(action_space, None)
 
@@ -977,7 +971,7 @@ class DistributionalQValueHook(QValueHook):
         >>> import torch
         >>> from tensordict import TensorDict
         >>> from torch import nn
-        >>> from torchrl.data import OneHotDiscreteTensorSpec
+        >>> from torchrl.data import OneHot
         >>> from torchrl.modules.tensordict_module.actors import DistributionalQValueHook, Actor
         >>> td = TensorDict({'observation': torch.randn(5, 4)}, [5])
         >>> nbins = 3
@@ -991,7 +985,7 @@ class DistributionalQValueHook(QValueHook):
         ...
         >>> module = CustomDistributionalQval()
         >>> params = TensorDict.from_module(module)
-        >>> action_spec = OneHotDiscreteTensorSpec(4)
+        >>> action_spec = OneHot(4)
         >>> hook = DistributionalQValueHook("one_hot", support = torch.arange(nbins))
         >>> module.register_forward_hook(hook)
         >>> qvalue_actor = Actor(module=module, spec=action_spec, out_keys=["action", "action_value"])
@@ -1087,12 +1081,12 @@ class QValueActor(SafeSequential):
         >>> import torch
         >>> from tensordict import TensorDict
         >>> from torch import nn
-        >>> from torchrl.data import OneHotDiscreteTensorSpec
+        >>> from torchrl.data import OneHot
         >>> from torchrl.modules.tensordict_module.actors import QValueActor
         >>> td = TensorDict({'observation': torch.randn(5, 4)}, [5])
         >>> # with a regular nn.Module
         >>> module = nn.Linear(4, 4)
-        >>> action_spec = OneHotDiscreteTensorSpec(4)
+        >>> action_spec = OneHot(4)
         >>> qvalue_actor = QValueActor(module=module, spec=action_spec)
         >>> td = qvalue_actor(td)
         >>> print(td)
@@ -1108,7 +1102,7 @@ class QValueActor(SafeSequential):
         >>> # with a TensorDictModule
         >>> td = TensorDict({'obs': torch.randn(5, 4)}, [5])
         >>> module = TensorDictModule(lambda x: x, in_keys=["obs"], out_keys=["action_value"])
-        >>> action_spec = OneHotDiscreteTensorSpec(4)
+        >>> action_spec = OneHot(4)
         >>> qvalue_actor = QValueActor(module=module, spec=action_spec)
         >>> td = qvalue_actor(td)
         >>> print(td)
@@ -1136,10 +1130,9 @@ class QValueActor(SafeSequential):
         action_mask_key: Optional[NestedKey] = None,
     ):
         if isinstance(action_space, TensorSpec):
-            warnings.warn(
-                "Using specs in action_space will be deprecated v0.4.0,"
-                " please use the 'spec' argument if you want to provide an action spec",
-                category=DeprecationWarning,
+            raise RuntimeError(
+                "Using specs in action_space is deprecated."
+                "Please use the 'spec' argument if you want to provide an action spec"
             )
         action_space, spec = _process_action_space_spec(action_space, spec)
 
@@ -1164,13 +1157,13 @@ class QValueActor(SafeSequential):
                 module, in_keys=in_keys, out_keys=[action_value_key]
             )
         if spec is None:
-            spec = CompositeSpec()
-        if isinstance(spec, CompositeSpec):
+            spec = Composite()
+        if isinstance(spec, Composite):
             spec = spec.clone()
             if "action" not in spec.keys():
                 spec["action"] = None
         else:
-            spec = CompositeSpec(action=spec, shape=spec.shape[:-1])
+            spec = Composite(action=spec, shape=spec.shape[:-1])
         spec[action_value_key] = None
         spec["chosen_action_value"] = None
         qvalue = QValueModule(
@@ -1240,7 +1233,7 @@ class DistributionalQValueActor(QValueActor):
         >>> from tensordict import TensorDict
         >>> from tensordict.nn import TensorDictModule, TensorDictSequential
         >>> from torch import nn
-        >>> from torchrl.data import OneHotDiscreteTensorSpec
+        >>> from torchrl.data import OneHot
         >>> from torchrl.modules import DistributionalQValueActor, MLP
         >>> td = TensorDict({'observation': torch.randn(5, 4)}, [5])
         >>> nbins = 3
@@ -1250,7 +1243,7 @@ class DistributionalQValueActor(QValueActor):
         ...     TensorDictModule(module, ["observation"], ["action_value"]),
         ...     TensorDictModule(lambda x: x.log_softmax(-2), ["action_value"], ["action_value"]),
         ... )
-        >>> action_spec = OneHotDiscreteTensorSpec(4)
+        >>> action_spec = OneHot(4)
         >>> qvalue_actor = DistributionalQValueActor(
         ...     module=module,
         ...     spec=action_spec,
@@ -1302,13 +1295,13 @@ class DistributionalQValueActor(QValueActor):
                 module, in_keys=in_keys, out_keys=[action_value_key]
             )
         if spec is None:
-            spec = CompositeSpec()
-        if isinstance(spec, CompositeSpec):
+            spec = Composite()
+        if isinstance(spec, Composite):
             spec = spec.clone()
             if "action" not in spec.keys():
                 spec["action"] = None
         else:
-            spec = CompositeSpec(action=spec, shape=spec.shape[:-1])
+            spec = Composite(action=spec, shape=spec.shape[:-1])
         spec[action_value_key] = None
 
         qvalue = DistributionalQValueModule(
@@ -1382,7 +1375,7 @@ class ActorValueOperator(SafeSequential):
         >>> import torch
         >>> from tensordict import TensorDict
         >>> from torchrl.modules import ProbabilisticActor, SafeModule
-        >>> from torchrl.modules import ValueOperator, TanhNormal, ActorValueOperator, NormalParamWrapper
+        >>> from torchrl.modules import ValueOperator, TanhNormal, ActorValueOperator, NormalParamExtractor
         >>> module_hidden = torch.nn.Linear(4, 4)
         >>> td_module_hidden = SafeModule(
         ...    module=module_hidden,
@@ -1390,7 +1383,7 @@ class ActorValueOperator(SafeSequential):
         ...    out_keys=["hidden"],
         ...    )
         >>> module_action = TensorDictModule(
-        ...     NormalParamWrapper(torch.nn.Linear(4, 8)),
+        ...     nn.Sequential(torch.nn.Linear(4, 8), NormalParamExtractor()),
         ...     in_keys=["hidden"],
         ...     out_keys=["loc", "scale"],
         ...     )
@@ -1534,14 +1527,14 @@ class ActorCriticOperator(ActorValueOperator):
         >>> import torch
         >>> from tensordict import TensorDict
         >>> from torchrl.modules import ProbabilisticActor
-        >>> from torchrl.modules import  ValueOperator, TanhNormal, ActorCriticOperator, NormalParamWrapper, MLP
+        >>> from torchrl.modules import  ValueOperator, TanhNormal, ActorCriticOperator, NormalParamExtractor, MLP
         >>> module_hidden = torch.nn.Linear(4, 4)
         >>> td_module_hidden = SafeModule(
         ...    module=module_hidden,
         ...    in_keys=["observation"],
         ...    out_keys=["hidden"],
         ...    )
-        >>> module_action = NormalParamWrapper(torch.nn.Linear(4, 8))
+        >>> module_action = nn.Sequential(torch.nn.Linear(4, 8), NormalParamExtractor())
         >>> module_action = TensorDictModule(module_action, in_keys=["hidden"], out_keys=["loc", "scale"])
         >>> td_module_action = ProbabilisticActor(
         ...    module=module_action,
@@ -1680,12 +1673,12 @@ class ActorCriticWrapper(SafeSequential):
         >>> from torchrl.modules import (
         ...      ActorCriticWrapper,
         ...      ProbabilisticActor,
-        ...      NormalParamWrapper,
+        ...      NormalParamExtractor,
         ...      TanhNormal,
         ...      ValueOperator,
         ...  )
         >>> action_module = TensorDictModule(
-        ...        NormalParamWrapper(torch.nn.Linear(4, 8)),
+        ...        nn.Sequential(torch.nn.Linear(4, 8), NormalParamExtractor()),
         ...        in_keys=["observation"],
         ...        out_keys=["loc", "scale"],
         ...    )
@@ -1851,8 +1844,8 @@ class DecisionTransformerInferenceWrapper(TensorDictModuleWrapper):
         self.return_to_go_key = "return_to_go"
         self.inference_context = inference_context
         if spec is not None:
-            if not isinstance(spec, CompositeSpec) and len(self.out_keys) >= 1:
-                spec = CompositeSpec({self.action_key: spec}, shape=spec.shape[:-1])
+            if not isinstance(spec, Composite) and len(self.out_keys) >= 1:
+                spec = Composite({self.action_key: spec}, shape=spec.shape[:-1])
             self._spec = spec
         elif hasattr(self.td_module, "_spec"):
             self._spec = self.td_module._spec.clone()
@@ -1863,7 +1856,7 @@ class DecisionTransformerInferenceWrapper(TensorDictModuleWrapper):
             if self.action_key not in self._spec.keys():
                 self._spec[self.action_key] = None
         else:
-            self._spec = CompositeSpec({key: None for key in policy.out_keys})
+            self._spec = Composite({key: None for key in policy.out_keys})
         self.checked = False
 
     @property
@@ -1992,7 +1985,7 @@ class TanhModule(TensorDictModuleBase):
 
     Keyword Args:
         spec (TensorSpec, optional): if provided, the spec of the output.
-            If a CompositeSpec is provided, its key(s) must match the key(s)
+            If a Composite is provided, its key(s) must match the key(s)
             in out_keys. Otherwise, the key(s) of out_keys are assumed and the
             same spec is used for all outputs.
         low (float, np.ndarray or torch.Tensor): the lower bound of the space.
@@ -2030,8 +2023,8 @@ class TanhModule(TensorDictModuleBase):
         >>> data['action']
         tensor([-2.0000,  0.9991,  1.0000, -2.0000, -1.9991])
         >>> # A spec can be provided
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> spec = BoundedTensorSpec(low, high, shape=())
+        >>> from torchrl.data import Bounded
+        >>> spec = Bounded(low, high, shape=())
         >>> mod = TanhModule(
         ...     in_keys=in_keys,
         ...     low=low,
@@ -2041,9 +2034,9 @@ class TanhModule(TensorDictModuleBase):
         ... )
         >>> # One can also work with multiple keys
         >>> in_keys = ['a', 'b']
-        >>> spec = CompositeSpec(
-        ...     a=BoundedTensorSpec(-3, 0, shape=()),
-        ...     b=BoundedTensorSpec(0, 3, shape=()))
+        >>> spec = Composite(
+        ...     a=Bounded(-3, 0, shape=()),
+        ...     b=Bounded(0, 3, shape=()))
         >>> mod = TanhModule(
         ...     in_keys=in_keys,
         ...     spec=spec,
@@ -2080,13 +2073,13 @@ class TanhModule(TensorDictModuleBase):
             )
         self.out_keys = out_keys
         # action_spec can be a composite spec or not
-        if isinstance(spec, CompositeSpec):
+        if isinstance(spec, Composite):
             for out_key in self.out_keys:
                 if out_key not in spec.keys(True, True):
                     spec[out_key] = None
         else:
             # if one spec is present, we assume it is the same for all keys
-            spec = CompositeSpec(
+            spec = Composite(
                 {out_key: spec for out_key in out_keys},
             )
 

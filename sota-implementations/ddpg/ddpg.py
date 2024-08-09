@@ -108,7 +108,7 @@ def main(cfg: "DictConfig"):  # noqa: F821
     for _, tensordict in enumerate(collector):
         sampling_time = time.time() - sampling_start
         # Update exploration policy
-        exploration_policy.step(tensordict.numel())
+        exploration_policy[1].step(tensordict.numel())
 
         # Update weights of the inference policy
         collector.update_policy_weights_()
@@ -185,7 +185,7 @@ def main(cfg: "DictConfig"):  # noqa: F821
 
         # Evaluation
         if abs(collected_frames % eval_iter) < frames_per_batch:
-            with set_exploration_type(ExplorationType.MODE), torch.no_grad():
+            with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
                 eval_start = time.time()
                 eval_rollout = eval_env.rollout(
                     eval_rollout_steps,
@@ -205,6 +205,10 @@ def main(cfg: "DictConfig"):  # noqa: F821
     collector.shutdown()
     end_time = time.time()
     execution_time = end_time - start_time
+    if not eval_env.is_closed:
+        eval_env.close()
+    if not train_env.is_closed:
+        train_env.close()
     torchrl_logger.info(f"Training took {execution_time:.2f} seconds to finish")
 
 

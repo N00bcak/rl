@@ -26,8 +26,8 @@ from tensordict import (
     LazyStackedTensorDict,
     TensorDict,
     TensorDictBase,
+    unravel_key,
 )
-from tensordict._tensordict import unravel_key
 from torch import multiprocessing as mp
 from torchrl._utils import (
     _check_for_faulty_process,
@@ -36,7 +36,7 @@ from torchrl._utils import (
     logger as torchrl_logger,
     VERBOSE,
 )
-from torchrl.data.tensor_specs import CompositeSpec, NonTensorSpec
+from torchrl.data.tensor_specs import Composite, NonTensor
 from torchrl.data.utils import CloudpickleWrapper, contains_lazy_spec, DEVICE_TYPING
 from torchrl.envs.common import _do_nothing, _EnvPostInit, EnvBase, EnvMetaData
 from torchrl.envs.env_creator import get_env_metadata
@@ -406,17 +406,16 @@ class BatchedEnvBase(EnvBase):
             return _do_nothing, _do_nothing
 
         if worker_device is None:
-            worker_not_main = [False]
+            worker_not_main = False
 
-            def find_all_worker_devices(item, worker_not_main=worker_not_main):
+            def find_all_worker_devices(item):
+                nonlocal worker_not_main
                 if hasattr(item, "device"):
-                    worker_not_main[0] = worker_not_main[0] or (
-                        item.device != self_device
-                    )
+                    worker_not_main = worker_not_main or (item.device != self_device)
 
             for td in self.shared_tensordicts:
                 td.apply(find_all_worker_devices, filter_empty=True)
-            if worker_not_main[0]:
+            if worker_not_main:
                 if torch.cuda.is_available():
                     worker_device = (
                         torch.device("cuda")
@@ -431,6 +430,8 @@ class BatchedEnvBase(EnvBase):
                     )
                 else:
                     raise RuntimeError("Did not find a valid worker device")
+            else:
+                worker_device = self_device
 
         if (
             worker_device is not None
@@ -460,6 +461,7 @@ class BatchedEnvBase(EnvBase):
             and self_device.type == "mps"
         ):
             return _mps_sync(self_device), _mps_sync(self_device)
+        return _do_nothing, _do_nothing
 
     def __getstate__(self):
         out = copy(self.__dict__)
@@ -548,7 +550,7 @@ class BatchedEnvBase(EnvBase):
 
         cls = type(self)
 
-        def _check_for_empty_spec(specs: CompositeSpec):
+        def _check_for_empty_spec(specs: Composite):
             for subspec in (
                 "full_state_spec",
                 "full_action_spec",
@@ -557,9 +559,9 @@ class BatchedEnvBase(EnvBase):
                 "full_observation_spec",
             ):
                 for key, spec in reversed(
-                    list(specs.get(subspec, default=CompositeSpec()).items(True))
+                    list(specs.get(subspec, default=Composite()).items(True))
                 ):
-                    if isinstance(spec, CompositeSpec) and spec.is_empty():
+                    if isinstance(spec, Composite) and spec.is_empty():
                         raise RuntimeError(
                             f"The environment passed to {cls.__name__} has empty specs in {key}. Consider using "
                             f"torchrl.envs.transforms.RemoveEmptySpecs to remove the empty specs."
@@ -673,7 +675,7 @@ class BatchedEnvBase(EnvBase):
             self.full_done_spec,
         ):
             for key, _spec in spec.items(True, True):
-                if isinstance(_spec, NonTensorSpec):
+                if isinstance(_spec, NonTensor):
                     non_tensor_keys.append(key)
         self._non_tensor_keys = non_tensor_keys
 

@@ -21,20 +21,15 @@ from torch import nn
 from torchrl._utils import _replace_last
 
 from torchrl.collectors import SyncDataCollector
-from torchrl.data import (
-    BoundedTensorSpec,
-    CompositeSpec,
-    DiscreteTensorSpec,
-    OneHotDiscreteTensorSpec,
-)
+from torchrl.data import Bounded, Categorical, Composite, OneHot
 from torchrl.envs import SerialEnv
 from torchrl.envs.transforms.transforms import gSDENoise, InitTracker, TransformedEnv
 from torchrl.envs.utils import set_exploration_type
 from torchrl.modules import SafeModule, SafeSequential
-from torchrl.modules.distributions import TanhNormal
-from torchrl.modules.distributions.continuous import (
+from torchrl.modules.distributions import (
     IndependentNormal,
-    NormalParamWrapper,
+    NormalParamExtractor,
+    TanhNormal,
 )
 from torchrl.modules.models.exploration import LazygSDEModule
 from torchrl.modules.tensordict_module.actors import (
@@ -44,9 +39,11 @@ from torchrl.modules.tensordict_module.actors import (
 )
 from torchrl.modules.tensordict_module.exploration import (
     _OrnsteinUhlenbeckProcess,
+    AdditiveGaussianModule,
     AdditiveGaussianWrapper,
     EGreedyModule,
     EGreedyWrapper,
+    OrnsteinUhlenbeckProcessModule,
     OrnsteinUhlenbeckProcessWrapper,
 )
 
@@ -57,7 +54,7 @@ class TestEGreedy:
     @set_exploration_type(InteractionType.RANDOM)
     def test_egreedy(self, eps_init, module):
         torch.manual_seed(0)
-        spec = BoundedTensorSpec(1, 1, torch.Size([4]))
+        spec = Bounded(1, 1, torch.Size([4]))
         module = torch.nn.Linear(4, 4, bias=False)
 
         policy = Actor(spec=spec, module=module)
@@ -89,9 +86,9 @@ class TestEGreedy:
         batch_size = (3, 4, 2)
         module = torch.nn.Linear(action_size, action_size, bias=False)
         if spec_class == "discrete":
-            spec = DiscreteTensorSpec(action_size)
+            spec = Categorical(action_size)
         else:
-            spec = OneHotDiscreteTensorSpec(
+            spec = OneHot(
                 action_size,
                 shape=(action_size,),
             )
@@ -164,7 +161,7 @@ class TestEGreedy:
         action_size = 4
         batch_size = (3, 4, 2)
         module = torch.nn.Linear(action_size, action_size, bias=False)
-        spec = OneHotDiscreteTensorSpec(action_size, shape=(action_size,))
+        spec = OneHot(action_size, shape=(action_size,))
         policy = QValueActor(spec=spec, module=module)
         explorative_policy = TensorDictSequential(
             policy,
@@ -185,7 +182,7 @@ class TestEGreedy:
     @pytest.mark.parametrize("module", [True, False])
     def test_wrong_action_shape(self, module):
         torch.manual_seed(0)
-        spec = BoundedTensorSpec(1, 1, torch.Size([4]))
+        spec = Bounded(1, 1, torch.Size([4]))
         module = torch.nn.Linear(4, 5, bias=False)
 
         policy = Actor(spec=spec, module=module)
@@ -203,8 +200,8 @@ class TestEGreedy:
 
 
 @pytest.mark.parametrize("device", get_default_devices())
-class TestOrnsteinUhlenbeckProcessWrapper:
-    def test_ou(self, device, seed=0):
+class TestOrnsteinUhlenbeckProcess:
+    def test_ou_process(self, device, seed=0):
         torch.manual_seed(seed)
         td = TensorDict({"action": torch.randn(3) / 10}, batch_size=[], device=device)
         ou = _OrnsteinUhlenbeckProcess(10.0, mu=2.0, x0=-4, sigma=0.1, sigma_min=0.01)
@@ -229,11 +226,16 @@ class TestOrnsteinUhlenbeckProcessWrapper:
         assert pval_acc > 0.05
         assert pval_reg < 0.1
 
-    def test_ou_wrapper(self, device, d_obs=4, d_act=6, batch=32, n_steps=100, seed=0):
+    @pytest.mark.parametrize("interface", ["module", "wrapper"])
+    def test_ou(
+        self, device, interface, d_obs=4, d_act=6, batch=32, n_steps=100, seed=0
+    ):
         torch.manual_seed(seed)
-        net = NormalParamWrapper(nn.Linear(d_obs, 2 * d_act)).to(device)
+        net = nn.Sequential(nn.Linear(d_obs, 2 * d_act), NormalParamExtractor()).to(
+            device
+        )
         module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
-        action_spec = BoundedTensorSpec(-torch.ones(d_act), torch.ones(d_act), (d_act,))
+        action_spec = Bounded(-torch.ones(d_act), torch.ones(d_act), (d_act,))
         policy = ProbabilisticActor(
             spec=action_spec,
             module=module,
@@ -241,7 +243,13 @@ class TestOrnsteinUhlenbeckProcessWrapper:
             distribution_class=TanhNormal,
             default_interaction_type=InteractionType.RANDOM,
         ).to(device)
-        exploratory_policy = OrnsteinUhlenbeckProcessWrapper(policy)
+
+        if interface == "module":
+            ou = OrnsteinUhlenbeckProcessModule(spec=action_spec).to(device)
+            exploratory_policy = TensorDictSequential(policy, ou)
+        else:
+            exploratory_policy = OrnsteinUhlenbeckProcessWrapper(policy)
+            ou = exploratory_policy
 
         tensordict = TensorDict(
             batch_size=[batch],
@@ -261,13 +269,11 @@ class TestOrnsteinUhlenbeckProcessWrapper:
             )
             tensordict = exploratory_policy(tensordict.clone())
             if i == 0:
-                assert (tensordict[exploratory_policy.ou.steps_key] == 1).all()
+                assert (tensordict[ou.ou.steps_key] == 1).all()
             elif i == n_steps // 2 + 1:
-                assert (
-                    tensordict[exploratory_policy.ou.steps_key][: batch // 2] == 1
-                ).all()
+                assert (tensordict[ou.ou.steps_key][: batch // 2] == 1).all()
             else:
-                assert not (tensordict[exploratory_policy.ou.steps_key] == 1).any()
+                assert not (tensordict[ou.ou.steps_key] == 1).any()
 
             out.append(tensordict.clone())
             out_noexp.append(tensordict_noexp.clone())
@@ -284,7 +290,8 @@ class TestOrnsteinUhlenbeckProcessWrapper:
 
     @pytest.mark.parametrize("parallel_spec", [True, False])
     @pytest.mark.parametrize("probabilistic", [True, False])
-    def test_collector(self, device, parallel_spec, probabilistic, seed=0):
+    @pytest.mark.parametrize("interface", ["module", "wrapper"])
+    def test_collector(self, device, parallel_spec, probabilistic, interface, seed=0):
         torch.manual_seed(seed)
         env = SerialEnv(
             2,
@@ -298,7 +305,9 @@ class TestOrnsteinUhlenbeckProcessWrapper:
             action_spec = ContinuousActionVecMockEnv(device=device).action_spec
         d_act = action_spec.shape[-1]
         if probabilistic:
-            net = NormalParamWrapper(nn.LazyLinear(2 * d_act)).to(device)
+            net = nn.Sequential(nn.LazyLinear(2 * d_act), NormalParamExtractor()).to(
+                device
+            )
             module = SafeModule(
                 net,
                 in_keys=["observation"],
@@ -317,7 +326,12 @@ class TestOrnsteinUhlenbeckProcessWrapper:
                 net, in_keys=["observation"], out_keys=["action"], spec=action_spec
             )
 
-        exploratory_policy = OrnsteinUhlenbeckProcessWrapper(policy)
+        if interface == "module":
+            exploratory_policy = TensorDictSequential(
+                policy, OrnsteinUhlenbeckProcessModule(spec=action_spec).to(device)
+            )
+        else:
+            exploratory_policy = OrnsteinUhlenbeckProcessWrapper(policy)
         exploratory_policy(env.reset())
         collector = SyncDataCollector(
             create_env_fn=env,
@@ -334,12 +348,14 @@ class TestOrnsteinUhlenbeckProcessWrapper:
     @pytest.mark.parametrize("nested_obs_action", [True, False])
     @pytest.mark.parametrize("nested_done", [True, False])
     @pytest.mark.parametrize("is_init_key", ["some"])
+    @pytest.mark.parametrize("interface", ["module", "wrapper"])
     def test_nested(
         self,
         device,
         nested_obs_action,
         nested_done,
         is_init_key,
+        interface,
         seed=0,
         n_envs=2,
         nested_dim=5,
@@ -368,9 +384,20 @@ class TestOrnsteinUhlenbeckProcessWrapper:
             in_keys=[("data", "states") if nested_obs_action else "observation"],
             out_keys=[env.action_key],
         )
-        exploratory_policy = OrnsteinUhlenbeckProcessWrapper(
-            policy, spec=action_spec, action_key=env.action_key, is_init_key=is_init_key
-        )
+        if interface == "module":
+            exploratory_policy = TensorDictSequential(
+                policy,
+                OrnsteinUhlenbeckProcessModule(
+                    spec=action_spec, action_key=env.action_key, is_init_key=is_init_key
+                ).to(device),
+            )
+        else:
+            exploratory_policy = OrnsteinUhlenbeckProcessWrapper(
+                policy,
+                spec=action_spec,
+                action_key=env.action_key,
+                is_init_key=is_init_key,
+            )
         collector = SyncDataCollector(
             create_env_fn=env,
             policy=exploratory_policy,
@@ -388,43 +415,59 @@ class TestOrnsteinUhlenbeckProcessWrapper:
 
         return
 
+    def test_no_spec_error(self, device):
+        with pytest.raises(RuntimeError, match="spec cannot be None."):
+            OrnsteinUhlenbeckProcessModule(spec=None).to(device)
+
 
 @pytest.mark.parametrize("device", get_default_devices())
 class TestAdditiveGaussian:
     @pytest.mark.parametrize("spec_origin", ["spec", "policy", None])
+    @pytest.mark.parametrize("interface", ["module", "wrapper"])
     def test_additivegaussian_sd(
         self,
         device,
         spec_origin,
+        interface,
         d_obs=4,
         d_act=6,
         batch=32,
         n_steps=100,
         seed=0,
     ):
+        if interface == "module" and spec_origin != "spec":
+            pytest.skip("module raises an error if given spec=None")
+
         torch.manual_seed(seed)
-        net = NormalParamWrapper(nn.Linear(d_obs, 2 * d_act)).to(device)
-        action_spec = BoundedTensorSpec(
+        action_spec = Bounded(
             -torch.ones(d_act, device=device),
             torch.ones(d_act, device=device),
             (d_act,),
             device=device,
         )
-        module = SafeModule(
-            net,
-            in_keys=["observation"],
-            out_keys=["loc", "scale"],
-            spec=None,
-        )
-        policy = ProbabilisticActor(
-            spec=CompositeSpec(action=action_spec) if spec_origin is not None else None,
-            module=module,
-            in_keys=["loc", "scale"],
-            distribution_class=TanhNormal,
-            default_interaction_type=InteractionType.RANDOM,
-        ).to(device)
-        given_spec = action_spec if spec_origin == "spec" else None
-        exploratory_policy = AdditiveGaussianWrapper(policy, spec=given_spec).to(device)
+        if interface == "module":
+            exploratory_policy = AdditiveGaussianModule(action_spec).to(device)
+        else:
+            net = nn.Sequential(nn.Linear(d_obs, 2 * d_act), NormalParamExtractor()).to(
+                device
+            )
+            module = SafeModule(
+                net,
+                in_keys=["observation"],
+                out_keys=["loc", "scale"],
+                spec=None,
+            )
+            policy = ProbabilisticActor(
+                spec=Composite(action=action_spec) if spec_origin is not None else None,
+                module=module,
+                in_keys=["loc", "scale"],
+                distribution_class=TanhNormal,
+                default_interaction_type=InteractionType.RANDOM,
+            ).to(device)
+            given_spec = action_spec if spec_origin == "spec" else None
+            exploratory_policy = AdditiveGaussianWrapper(policy, spec=given_spec).to(
+                device
+            )
         if spec_origin is not None:
             sigma_init = (
                 action_spec.project(
@@ -442,9 +485,14 @@ class TestAdditiveGaussian:
             sigma_init = exploratory_policy.sigma_init
             sigma_end = exploratory_policy.sigma_end
         if spec_origin is None:
+            class_name = (
+                "AdditiveGaussianModule"
+                if interface == "module"
+                else "AdditiveGaussianWrapper"
+            )
             with pytest.raises(
                 RuntimeError,
-                match="the action spec must be provided to AdditiveGaussianWrapper",
+                match=f"the action spec must be provided to {class_name}",
             ):
                 exploratory_policy._add_noise(action_spec.rand((100000,)).zero_())
             return
@@ -466,13 +514,27 @@ class TestAdditiveGaussian:
         assert abs(noisy_action.std() - sigma_end) < 1e-1
 
     @pytest.mark.parametrize("spec_origin", ["spec", "policy", None])
-    def test_additivegaussian_wrapper(
-        self, device, spec_origin, d_obs=4, d_act=6, batch=32, n_steps=100, seed=0
+    @pytest.mark.parametrize("interface", ["module", "wrapper"])
+    def test_additivegaussian(
+        self,
+        device,
+        spec_origin,
+        interface,
+        d_obs=4,
+        d_act=6,
+        batch=32,
+        n_steps=100,
+        seed=0,
     ):
+        if interface == "module" and spec_origin != "spec":
+            pytest.skip("module raises an error if given spec=None")
+
         torch.manual_seed(seed)
-        net = NormalParamWrapper(nn.Linear(d_obs, 2 * d_act)).to(device)
+        net = nn.Sequential(nn.Linear(d_obs, 2 * d_act), NormalParamExtractor()).to(
+            device
+        )
         module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
-        action_spec = BoundedTensorSpec(
+        action_spec = Bounded(
             -torch.ones(d_act, device=device),
             torch.ones(d_act, device=device),
             (d_act,),
@@ -486,9 +548,14 @@ class TestAdditiveGaussian:
             default_interaction_type=InteractionType.RANDOM,
         ).to(device)
         given_spec = action_spec if spec_origin == "spec" else None
-        exploratory_policy = AdditiveGaussianWrapper(
-            policy, spec=given_spec, safe=False
-        ).to(device)
+        if interface == "module":
+            exploratory_policy = TensorDictSequential(
+                policy, AdditiveGaussianModule(spec=given_spec).to(device)
+            )
+        else:
+            exploratory_policy = AdditiveGaussianWrapper(
+                policy, spec=given_spec, safe=False
+            ).to(device)
 
         tensordict = TensorDict(
             batch_size=[batch],
@@ -513,7 +580,8 @@ class TestAdditiveGaussian:
                 assert action_spec.is_in(out.get("action"))
 
     @pytest.mark.parametrize("parallel_spec", [True, False])
-    def test_collector(self, device, parallel_spec, seed=0):
+    @pytest.mark.parametrize("interface", ["module", "wrapper"])
+    def test_collector(self, device, parallel_spec, interface, seed=0):
         torch.manual_seed(seed)
         env = SerialEnv(
             2,
@@ -526,7 +594,7 @@ class TestAdditiveGaussian:
         else:
             action_spec = ContinuousActionVecMockEnv(device=device).action_spec
         d_act = action_spec.shape[-1]
-        net = NormalParamWrapper(nn.LazyLinear(2 * d_act)).to(device)
+        net = nn.Sequential(nn.LazyLinear(2 * d_act), NormalParamExtractor()).to(device)
         module = SafeModule(
             net,
             in_keys=["observation"],
@@ -539,7 +607,12 @@ class TestAdditiveGaussian:
             default_interaction_type=InteractionType.RANDOM,
             spec=action_spec,
         ).to(device)
-        exploratory_policy = AdditiveGaussianWrapper(policy, safe=False)
+        if interface == "module":
+            exploratory_policy = TensorDictSequential(
+                policy, AdditiveGaussianModule(spec=action_spec).to(device)
+            )
+        else:
+            exploratory_policy = AdditiveGaussianWrapper(policy, safe=False)
         exploratory_policy(env.reset())
         collector = SyncDataCollector(
             create_env_fn=env,
@@ -553,6 +626,10 @@ class TestAdditiveGaussian:
             pass
         return
 
+    def test_no_spec_error(self, device):
+        with pytest.raises(RuntimeError, match="spec cannot be None."):
+            AdditiveGaussianModule(spec=None).to(device)
+
 
 @pytest.mark.parametrize("state_dim", [7])
 @pytest.mark.parametrize("action_dim", [5, 11])
@@ -560,7 +637,7 @@ class TestAdditiveGaussian:
 @pytest.mark.parametrize("safe", [True, False])
 @pytest.mark.parametrize("device", get_default_devices())
 @pytest.mark.parametrize(
-    "exploration_type", [InteractionType.RANDOM, InteractionType.MODE]
+    "exploration_type", [InteractionType.RANDOM, InteractionType.DETERMINISTIC]
 )
 def test_gsde(
     state_dim, action_dim, gSDE, device, safe, exploration_type, batch=16, bound=0.1
@@ -582,11 +659,11 @@ def test_gsde(
     else:
         in_keys = ["observation"]
         model = torch.nn.LazyLinear(action_dim * 2, device=device)
-        wrapper = NormalParamWrapper(model)
+        wrapper = nn.Sequential(model, NormalParamExtractor())
         module = SafeModule(wrapper, in_keys=in_keys, out_keys=["loc", "scale"])
         distribution_class = TanhNormal
         distribution_kwargs = {"low": -bound, "high": bound}
-    spec = BoundedTensorSpec(
+    spec = Bounded(
         -torch.ones(action_dim) * bound, torch.ones(action_dim) * bound, (action_dim,)
     ).to(device)
 
@@ -624,7 +701,10 @@ def test_gsde(
         with set_exploration_type(exploration_type):
             action1 = module(td).get("action")
         action2 = actor(td.exclude("action")).get("action")
-        if gSDE or exploration_type == InteractionType.MODE:
+        if gSDE or exploration_type in (
+            InteractionType.DETERMINISTIC,
+            InteractionType.MODE,
+        ):
             torch.testing.assert_close(action1, action2)
         else:
             with pytest.raises(AssertionError):

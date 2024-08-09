@@ -15,7 +15,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import LazyStackedTensorDict, TensorDictBase, unravel_key
-from tensordict.base import NO_DEFAULT
 from tensordict.utils import NestedKey
 from torchrl._utils import (
     _ends_with,
@@ -26,12 +25,7 @@ from torchrl._utils import (
     seed_generator,
 )
 
-from torchrl.data.tensor_specs import (
-    CompositeSpec,
-    DiscreteTensorSpec,
-    TensorSpec,
-    UnboundedContinuousTensorSpec,
-)
+from torchrl.data.tensor_specs import Categorical, Composite, TensorSpec, Unbounded
 from torchrl.data.utils import DEVICE_TYPING
 from torchrl.envs.utils import (
     _make_compatible_policy,
@@ -63,7 +57,7 @@ class EnvMetaData:
         self,
         *,
         tensordict: TensorDictBase,
-        specs: CompositeSpec,
+        specs: Composite,
         batch_size: torch.Size,
         env_str: str,
         device: torch.device,
@@ -92,7 +86,7 @@ class EnvMetaData:
         self._tensordict = value.to("cpu")
 
     @specs.setter
-    def specs(self, value: CompositeSpec):
+    def specs(self, value: Composite):
         self._specs = value.to("cpu")
 
     @staticmethod
@@ -213,29 +207,29 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             be done after a call to :meth:`~.reset` is made. Defaults to ``False``.
 
     Attributes:
-        done_spec (CompositeSpec): equivalent to ``full_done_spec`` as all
+        done_spec (Composite): equivalent to ``full_done_spec`` as all
             ``done_specs`` contain at least a ``"done"`` and a ``"terminated"`` entry
         action_spec (TensorSpec): the spec of the action. Links to the spec of the leaf
             action if only one action tensor is to be expected. Otherwise links to
             ``full_action_spec``.
-        observation_spec (CompositeSpec): equivalent to ``full_observation_spec``.
+        observation_spec (Composite): equivalent to ``full_observation_spec``.
         reward_spec (TensorSpec): the spec of the reward. Links to the spec of the leaf
             reward if only one reward tensor is to be expected. Otherwise links to
             ``full_reward_spec``.
-        state_spec (CompositeSpec): equivalent to ``full_state_spec``.
-        full_done_spec (CompositeSpec): a composite spec such that ``full_done_spec.zero()``
+        state_spec (Composite): equivalent to ``full_state_spec``.
+        full_done_spec (Composite): a composite spec such that ``full_done_spec.zero()``
             returns a tensordict containing only the leaves encoding the done status of the
             environment.
-        full_action_spec (CompositeSpec): a composite spec such that ``full_action_spec.zero()``
+        full_action_spec (Composite): a composite spec such that ``full_action_spec.zero()``
             returns a tensordict containing only the leaves encoding the action of the
             environment.
-        full_observation_spec (CompositeSpec): a composite spec such that ``full_observation_spec.zero()``
+        full_observation_spec (Composite): a composite spec such that ``full_observation_spec.zero()``
             returns a tensordict containing only the leaves encoding the observation of the
             environment.
-        full_reward_spec (CompositeSpec): a composite spec such that ``full_reward_spec.zero()``
+        full_reward_spec (Composite): a composite spec such that ``full_reward_spec.zero()``
             returns a tensordict containing only the leaves encoding the reward of the
             environment.
-        full_state_spec (CompositeSpec): a composite spec such that ``full_state_spec.zero()``
+        full_state_spec (Composite): a composite spec such that ``full_state_spec.zero()``
             returns a tensordict containing only the leaves encoding the inputs (actions
             excluded) of the environment.
         batch_size (torch.Size): The batch-size of the environment.
@@ -254,9 +248,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         >>> from torchrl.envs import EnvBase
         >>> class CounterEnv(EnvBase):
         ...     def __init__(self, batch_size=(), device=None, **kwargs):
-        ...         self.observation_spec = CompositeSpec(
-        ...             count=UnboundedContinuousTensorSpec(batch_size, device=device, dtype=torch.int64))
-        ...         self.action_spec = UnboundedContinuousTensorSpec(batch_size, device=device, dtype=torch.int8)
+        ...         self.observation_spec = Composite(
+        ...             count=Unbounded(batch_size, device=device, dtype=torch.int64))
+        ...         self.action_spec = Unbounded(batch_size, device=device, dtype=torch.int8)
         ...         # done spec and reward spec are set automatically
         ...     def _step(self, tensordict):
         ...
@@ -265,10 +259,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         >>> env.batch_size  # how many envs are run at once
         torch.Size([])
         >>> env.input_spec
-        CompositeSpec(
+        Composite(
             full_state_spec: None,
-            full_action_spec: CompositeSpec(
-                action: BoundedTensorSpec(
+            full_action_spec: Composite(
+                action: BoundedContinuous(
                     shape=torch.Size([1]),
                     space=ContinuousBox(
                         low=Tensor(shape=torch.Size([1]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -277,7 +271,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                     dtype=torch.float32,
                     domain=continuous), device=cpu, shape=torch.Size([])), device=cpu, shape=torch.Size([]))
         >>> env.action_spec
-        BoundedTensorSpec(
+        BoundedContinuous(
             shape=torch.Size([1]),
             space=ContinuousBox(
                 low=Tensor(shape=torch.Size([1]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -286,8 +280,8 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             dtype=torch.float32,
             domain=continuous)
         >>> env.observation_spec
-        CompositeSpec(
-            observation: BoundedTensorSpec(
+        Composite(
+            observation: BoundedContinuous(
                 shape=torch.Size([3]),
                 space=ContinuousBox(
                     low=Tensor(shape=torch.Size([3]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -296,14 +290,14 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                 dtype=torch.float32,
                 domain=continuous), device=cpu, shape=torch.Size([]))
         >>> env.reward_spec
-        UnboundedContinuousTensorSpec(
+        UnboundedContinuous(
             shape=torch.Size([1]),
             space=None,
             device=cpu,
             dtype=torch.float32,
             domain=continuous)
         >>> env.done_spec
-        DiscreteTensorSpec(
+        Categorical(
             shape=torch.Size([1]),
             space=DiscreteBox(n=2),
             device=cpu,
@@ -311,16 +305,16 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             domain=discrete)
         >>> # the output_spec contains all the expected outputs
         >>> env.output_spec
-        CompositeSpec(
-            full_reward_spec: CompositeSpec(
-                reward: UnboundedContinuousTensorSpec(
+        Composite(
+            full_reward_spec: Composite(
+                reward: UnboundedContinuous(
                     shape=torch.Size([1]),
                     space=None,
                     device=cpu,
                     dtype=torch.float32,
                     domain=continuous), device=cpu, shape=torch.Size([])),
-            full_observation_spec: CompositeSpec(
-                observation: BoundedTensorSpec(
+            full_observation_spec: Composite(
+                observation: BoundedContinuous(
                     shape=torch.Size([3]),
                     space=ContinuousBox(
                         low=Tensor(shape=torch.Size([3]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -328,8 +322,8 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                     device=cpu,
                     dtype=torch.float32,
                     domain=continuous), device=cpu, shape=torch.Size([])),
-            full_done_spec: CompositeSpec(
-                done: DiscreteTensorSpec(
+            full_done_spec: Composite(
+                done: Categorical(
                     shape=torch.Size([1]),
                     space=DiscreteBox(n=2),
                     device=cpu,
@@ -545,10 +539,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> from torchrl.envs.libs.gym import GymEnv
             >>> env = GymEnv("Pendulum-v1")
             >>> env.input_spec
-            CompositeSpec(
+            Composite(
                 full_state_spec: None,
-                full_action_spec: CompositeSpec(
-                    action: BoundedTensorSpec(
+                full_action_spec: Composite(
+                    action: BoundedContinuous(
                         shape=torch.Size([1]),
                         space=ContinuousBox(
                             low=Tensor(shape=torch.Size([1]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -561,7 +555,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         """
         input_spec = self.__dict__.get("_input_spec")
         if input_spec is None:
-            input_spec = CompositeSpec(
+            input_spec = Composite(
                 full_state_spec=None,
                 shape=self.batch_size,
                 device=self.device,
@@ -592,16 +586,16 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> from torchrl.envs.libs.gym import GymEnv
             >>> env = GymEnv("Pendulum-v1")
             >>> env.output_spec
-            CompositeSpec(
-                full_reward_spec: CompositeSpec(
-                    reward: UnboundedContinuousTensorSpec(
+            Composite(
+                full_reward_spec: Composite(
+                    reward: UnboundedContinuous(
                         shape=torch.Size([1]),
                         space=None,
                         device=cpu,
                         dtype=torch.float32,
                         domain=continuous), device=cpu, shape=torch.Size([])),
-                full_observation_spec: CompositeSpec(
-                    observation: BoundedTensorSpec(
+                full_observation_spec: Composite(
+                    observation: BoundedContinuous(
                         shape=torch.Size([3]),
                         space=ContinuousBox(
                             low=Tensor(shape=torch.Size([3]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -609,8 +603,8 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                         device=cpu,
                         dtype=torch.float32,
                         domain=continuous), device=cpu, shape=torch.Size([])),
-                full_done_spec: CompositeSpec(
-                    done: DiscreteTensorSpec(
+                full_done_spec: Composite(
+                    done: Categorical(
                         shape=torch.Size([1]),
                         space=DiscreteBox(n=2),
                         device=cpu,
@@ -621,7 +615,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         """
         output_spec = self.__dict__.get("_output_spec")
         if output_spec is None:
-            output_spec = CompositeSpec(
+            output_spec = Composite(
                 shape=self.batch_size,
                 device=self.device,
             ).lock_()
@@ -689,9 +683,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
 
         If the action spec is provided as a simple spec, this will be returned.
 
-            >>> env.action_spec = UnboundedContinuousTensorSpec(1)
+            >>> env.action_spec = Unbounded(1)
             >>> env.action_spec
-            UnboundedContinuousTensorSpec(
+            UnboundedContinuous(
                 shape=torch.Size([1]),
                 space=ContinuousBox(
                     low=Tensor(shape=torch.Size([]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -703,9 +697,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         If the action spec is provided as a composite spec and contains only one leaf,
         this function will return just the leaf.
 
-            >>> env.action_spec = CompositeSpec({"nested": {"action": UnboundedContinuousTensorSpec(1)}})
+            >>> env.action_spec = Composite({"nested": {"action": Unbounded(1)}})
             >>> env.action_spec
-            UnboundedContinuousTensorSpec(
+            UnboundedContinuous(
                 shape=torch.Size([1]),
                 space=ContinuousBox(
                     low=Tensor(shape=torch.Size([]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -717,11 +711,11 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         If the action spec is provided as a composite spec and has more than one leaf,
         this function will return the whole spec.
 
-            >>> env.action_spec = CompositeSpec({"nested": {"action": UnboundedContinuousTensorSpec(1), "another_action": DiscreteTensorSpec(1)}})
+            >>> env.action_spec = Composite({"nested": {"action": Unbounded(1), "another_action": Categorical(1)}})
             >>> env.action_spec
-            CompositeSpec(
-                nested: CompositeSpec(
-                    action: UnboundedContinuousTensorSpec(
+            Composite(
+                nested: Composite(
+                    action: UnboundedContinuous(
                         shape=torch.Size([1]),
                         space=ContinuousBox(
                             low=Tensor(shape=torch.Size([]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -729,7 +723,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                         device=cpu,
                         dtype=torch.float32,
                         domain=continuous),
-                    another_action: DiscreteTensorSpec(
+                    another_action: Categorical(
                         shape=torch.Size([]),
                         space=DiscreteBox(n=1),
                         device=cpu,
@@ -746,7 +740,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> from torchrl.envs.libs.gym import GymEnv
             >>> env = GymEnv("Pendulum-v1")
             >>> env.action_spec
-            BoundedTensorSpec(
+            BoundedContinuous(
                 shape=torch.Size([1]),
                 space=ContinuousBox(
                     low=Tensor(shape=torch.Size([1]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -795,16 +789,16 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                     f"The value of spec.shape ({value.shape}) must match the env batch size ({self.batch_size})."
                 )
 
-            if isinstance(value, CompositeSpec):
+            if isinstance(value, Composite):
                 for _ in value.values(True, True):  # noqa: B007
                     break
                 else:
                     raise RuntimeError(
-                        "An empty CompositeSpec was passed for the action spec. "
+                        "An empty Composite was passed for the action spec. "
                         "This is currently not permitted."
                     )
             else:
-                value = CompositeSpec(
+                value = Composite(
                     action=value.to(device), shape=self.batch_size, device=device
                 )
 
@@ -813,10 +807,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             self.input_spec.lock_()
 
     @property
-    def full_action_spec(self) -> CompositeSpec:
+    def full_action_spec(self) -> Composite:
         """The full action spec.
 
-        ``full_action_spec`` is a :class:`~torchrl.data.CompositeSpec`` instance
+        ``full_action_spec`` is a :class:`~torchrl.data.Composite`` instance
         that contains all the action entries.
 
         Examples:
@@ -825,8 +819,8 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             ...     break
             >>> env = BraxEnv(envname)
             >>> env.full_action_spec
-        CompositeSpec(
-            action: BoundedTensorSpec(
+        Composite(
+            action: BoundedContinuous(
                 shape=torch.Size([8]),
                 space=ContinuousBox(
                     low=Tensor(shape=torch.Size([8]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -839,7 +833,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         return self.input_spec["full_action_spec"]
 
     @full_action_spec.setter
-    def full_action_spec(self, spec: CompositeSpec) -> None:
+    def full_action_spec(self, spec: Composite) -> None:
         self.action_spec = spec
 
     # Reward spec
@@ -882,9 +876,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
 
         If the reward spec is provided as a simple spec, this will be returned.
 
-            >>> env.reward_spec = UnboundedContinuousTensorSpec(1)
+            >>> env.reward_spec = Unbounded(1)
             >>> env.reward_spec
-            UnboundedContinuousTensorSpec(
+            UnboundedContinuous(
                 shape=torch.Size([1]),
                 space=ContinuousBox(
                     low=Tensor(shape=torch.Size([]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -896,9 +890,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         If the reward spec is provided as a composite spec and contains only one leaf,
         this function will return just the leaf.
 
-            >>> env.reward_spec = CompositeSpec({"nested": {"reward": UnboundedContinuousTensorSpec(1)}})
+            >>> env.reward_spec = Composite({"nested": {"reward": Unbounded(1)}})
             >>> env.reward_spec
-            UnboundedContinuousTensorSpec(
+            UnboundedContinuous(
                 shape=torch.Size([1]),
                 space=ContinuousBox(
                     low=Tensor(shape=torch.Size([]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -910,11 +904,11 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         If the reward spec is provided as a composite spec and has more than one leaf,
         this function will return the whole spec.
 
-            >>> env.reward_spec = CompositeSpec({"nested": {"reward": UnboundedContinuousTensorSpec(1), "another_reward": DiscreteTensorSpec(1)}})
+            >>> env.reward_spec = Composite({"nested": {"reward": Unbounded(1), "another_reward": Categorical(1)}})
             >>> env.reward_spec
-            CompositeSpec(
-                nested: CompositeSpec(
-                    reward: UnboundedContinuousTensorSpec(
+            Composite(
+                nested: Composite(
+                    reward: UnboundedContinuous(
                         shape=torch.Size([1]),
                         space=ContinuousBox(
                             low=Tensor(shape=torch.Size([]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -922,7 +916,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                         device=cpu,
                         dtype=torch.float32,
                         domain=continuous),
-                    another_reward: DiscreteTensorSpec(
+                    another_reward: Categorical(
                         shape=torch.Size([]),
                         space=DiscreteBox(n=1),
                         device=cpu,
@@ -939,7 +933,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> from torchrl.envs.libs.gym import GymEnv
             >>> env = GymEnv("Pendulum-v1")
             >>> env.reward_spec
-            UnboundedContinuousTensorSpec(
+            UnboundedContinuous(
                 shape=torch.Size([1]),
                 space=None,
                 device=cpu,
@@ -953,7 +947,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             # this will be raised if there is not full_reward_spec (unlikely) or no reward_key
             # Since output_spec is lazily populated with an empty composite spec for
             # reward_spec, the second case is much more likely to occur.
-            self.reward_spec = UnboundedContinuousTensorSpec(
+            self.reward_spec = Unbounded(
                 shape=(*self.batch_size, 1),
                 device=self.device,
             )
@@ -983,16 +977,16 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                 raise ValueError(
                     f"The value of spec.shape ({value.shape}) must match the env batch size ({self.batch_size})."
                 )
-            if isinstance(value, CompositeSpec):
+            if isinstance(value, Composite):
                 for _ in value.values(True, True):  # noqa: B007
                     break
                 else:
                     raise RuntimeError(
-                        "An empty CompositeSpec was passed for the reward spec. "
+                        "An empty Composite was passed for the reward spec. "
                         "This is currently not permitted."
                     )
             else:
-                value = CompositeSpec(
+                value = Composite(
                     reward=value.to(device), shape=self.batch_size, device=device
                 )
             for leaf in value.values(True, True):
@@ -1008,10 +1002,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             self.output_spec.lock_()
 
     @property
-    def full_reward_spec(self) -> CompositeSpec:
+    def full_reward_spec(self) -> Composite:
         """The full reward spec.
 
-        ``full_reward_spec`` is a :class:`~torchrl.data.CompositeSpec`` instance
+        ``full_reward_spec`` is a :class:`~torchrl.data.Composite`` instance
         that contains all the reward entries.
 
         Examples:
@@ -1020,9 +1014,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> base_env = GymWrapper(gymnasium.make("Pendulum-v1"))
             >>> env = TransformedEnv(base_env, RenameTransform("reward", ("nested", "reward")))
             >>> env.full_reward_spec
-            CompositeSpec(
-                nested: CompositeSpec(
-                    reward: UnboundedContinuousTensorSpec(
+            Composite(
+                nested: Composite(
+                    reward: UnboundedContinuous(
                         shape=torch.Size([1]),
                         space=ContinuousBox(
                             low=Tensor(shape=torch.Size([]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -1035,7 +1029,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         return self.output_spec["full_reward_spec"]
 
     @full_reward_spec.setter
-    def full_reward_spec(self, spec: CompositeSpec) -> None:
+    def full_reward_spec(self, spec: Composite) -> None:
         self.reward_spec = spec.to(self.device) if self.device is not None else spec
 
     # done spec
@@ -1069,10 +1063,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         return self.done_keys[0]
 
     @property
-    def full_done_spec(self) -> CompositeSpec:
+    def full_done_spec(self) -> Composite:
         """The full done spec.
 
-        ``full_done_spec`` is a :class:`~torchrl.data.CompositeSpec`` instance
+        ``full_done_spec`` is a :class:`~torchrl.data.Composite`` instance
         that contains all the done entries.
         It can be used to generate fake data with a structure that mimics the
         one obtained at runtime.
@@ -1082,14 +1076,14 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> from torchrl.envs import GymWrapper
             >>> env = GymWrapper(gymnasium.make("Pendulum-v1"))
             >>> env.full_done_spec
-            CompositeSpec(
-                done: DiscreteTensorSpec(
+            Composite(
+                done: Categorical(
                     shape=torch.Size([1]),
                     space=DiscreteBox(n=2),
                     device=cpu,
                     dtype=torch.bool,
                     domain=discrete),
-                truncated: DiscreteTensorSpec(
+                truncated: Categorical(
                     shape=torch.Size([1]),
                     space=DiscreteBox(n=2),
                     device=cpu,
@@ -1100,7 +1094,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         return self.output_spec["full_done_spec"]
 
     @full_done_spec.setter
-    def full_done_spec(self, spec: CompositeSpec) -> None:
+    def full_done_spec(self, spec: Composite) -> None:
         self.done_spec = spec.to(self.device) if self.device is not None else spec
 
     # Done spec: done specs belong to output_spec
@@ -1112,9 +1106,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
 
         If the done spec is provided as a simple spec, this will be returned.
 
-            >>> env.done_spec = DiscreteTensorSpec(2, dtype=torch.bool)
+            >>> env.done_spec = Categorical(2, dtype=torch.bool)
             >>> env.done_spec
-            DiscreteTensorSpec(
+            Categorical(
                 shape=torch.Size([]),
                 space=DiscreteBox(n=2),
                 device=cpu,
@@ -1124,9 +1118,9 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         If the done spec is provided as a composite spec and contains only one leaf,
         this function will return just the leaf.
 
-            >>> env.done_spec = CompositeSpec({"nested": {"done": DiscreteTensorSpec(2, dtype=torch.bool)}})
+            >>> env.done_spec = Composite({"nested": {"done": Categorical(2, dtype=torch.bool)}})
             >>> env.done_spec
-            DiscreteTensorSpec(
+            Categorical(
                 shape=torch.Size([]),
                 space=DiscreteBox(n=2),
                 device=cpu,
@@ -1136,17 +1130,17 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         If the done spec is provided as a composite spec and has more than one leaf,
         this function will return the whole spec.
 
-            >>> env.done_spec = CompositeSpec({"nested": {"done": DiscreteTensorSpec(2, dtype=torch.bool), "another_done": DiscreteTensorSpec(2, dtype=torch.bool)}})
+            >>> env.done_spec = Composite({"nested": {"done": Categorical(2, dtype=torch.bool), "another_done": Categorical(2, dtype=torch.bool)}})
             >>> env.done_spec
-            CompositeSpec(
-                nested: CompositeSpec(
-                    done: DiscreteTensorSpec(
+            Composite(
+                nested: Composite(
+                    done: Categorical(
                         shape=torch.Size([]),
                         space=DiscreteBox(n=2),
                         device=cpu,
                         dtype=torch.bool,
                         domain=discrete),
-                    another_done: DiscreteTensorSpec(
+                    another_done: Categorical(
                         shape=torch.Size([]),
                         space=DiscreteBox(n=2),
                         device=cpu,
@@ -1163,7 +1157,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> from torchrl.envs.libs.gym import GymEnv
             >>> env = GymEnv("Pendulum-v1")
             >>> env.done_spec
-            DiscreteTensorSpec(
+            Categorical(
                 shape=torch.Size([1]),
                 space=DiscreteBox(n=2),
                 device=cpu,
@@ -1186,16 +1180,16 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         try:
             full_done_spec = self.output_spec["full_done_spec"]
         except KeyError:
-            full_done_spec = CompositeSpec(
+            full_done_spec = Composite(
                 shape=self.output_spec.shape, device=self.output_spec.device
             )
-            full_done_spec["done"] = DiscreteTensorSpec(
+            full_done_spec["done"] = Categorical(
                 n=2,
                 shape=(*full_done_spec.shape, 1),
                 dtype=torch.bool,
                 device=self.device,
             )
-            full_done_spec["terminated"] = DiscreteTensorSpec(
+            full_done_spec["terminated"] = Categorical(
                 n=2,
                 shape=(*full_done_spec.shape, 1),
                 dtype=torch.bool,
@@ -1216,7 +1210,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                     spec["terminated"] = item.clone()
                 elif key == "terminated" and "done" not in spec.keys():
                     spec["done"] = item.clone()
-                elif isinstance(item, CompositeSpec):
+                elif isinstance(item, Composite):
                     check_local_done(item)
                 else:
                     if shape is None:
@@ -1230,10 +1224,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
 
             # if the spec is empty, we need to add a done and terminated manually
             if spec.is_empty():
-                spec["done"] = DiscreteTensorSpec(
+                spec["done"] = Categorical(
                     n=2, shape=(*spec.shape, 1), dtype=torch.bool, device=self.device
                 )
-                spec["terminated"] = DiscreteTensorSpec(
+                spec["terminated"] = Categorical(
                     n=2, shape=(*spec.shape, 1), dtype=torch.bool, device=self.device
                 )
 
@@ -1261,16 +1255,16 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                 raise ValueError(
                     f"The value of spec.shape ({value.shape}) must match the env batch size ({self.batch_size})."
                 )
-            if isinstance(value, CompositeSpec):
+            if isinstance(value, Composite):
                 for _ in value.values(True, True):  # noqa: B007
                     break
                 else:
                     raise RuntimeError(
-                        "An empty CompositeSpec was passed for the done spec. "
+                        "An empty Composite was passed for the done spec. "
                         "This is currently not permitted."
                     )
             else:
-                value = CompositeSpec(
+                value = Composite(
                     done=value.to(device),
                     terminated=value.to(device),
                     shape=self.batch_size,
@@ -1291,10 +1285,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
 
     # observation spec: observation specs belong to output_spec
     @property
-    def observation_spec(self) -> CompositeSpec:
+    def observation_spec(self) -> Composite:
         """Observation spec.
 
-        Must be a :class:`torchrl.data.CompositeSpec` instance.
+        Must be a :class:`torchrl.data.Composite` instance.
         The keys listed in the spec are directly accessible after reset and step.
 
         In TorchRL, even though they are not properly speaking "observations"
@@ -1308,8 +1302,8 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             >>> from torchrl.envs.libs.gym import GymEnv
             >>> env = GymEnv("Pendulum-v1")
             >>> env.observation_spec
-            CompositeSpec(
-                observation: BoundedTensorSpec(
+            Composite(
+                observation: BoundedContinuous(
                     shape=torch.Size([3]),
                     space=ContinuousBox(
                         low=Tensor(shape=torch.Size([3]), device=cpu, dtype=torch.float32, contiguous=True),
@@ -1321,7 +1315,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         """
         observation_spec = self.output_spec["full_observation_spec"]
         if observation_spec is None:
-            observation_spec = CompositeSpec(shape=self.batch_size, device=self.device)
+            observation_spec = Composite(shape=self.batch_size, device=self.device)
             self.output_spec.unlock_()
             self.output_spec["full_observation_spec"] = observation_spec
             self.output_spec.lock_()
@@ -1331,7 +1325,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
     def observation_spec(self, value: TensorSpec) -> None:
         try:
             self.output_spec.unlock_()
-            if not isinstance(value, CompositeSpec):
+            if not isinstance(value, Composite):
                 raise TypeError("The type of an observation_spec must be Composite.")
             elif value.shape[: len(self.batch_size)] != self.batch_size:
                 raise ValueError(
@@ -1349,19 +1343,19 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             self.output_spec.lock_()
 
     @property
-    def full_observation_spec(self) -> CompositeSpec:
+    def full_observation_spec(self) -> Composite:
         return self.observation_spec
 
     @full_observation_spec.setter
-    def full_observation_spec(self, spec: CompositeSpec):
+    def full_observation_spec(self, spec: Composite):
         self.observation_spec = spec
 
     # state spec: state specs belong to input_spec
     @property
-    def state_spec(self) -> CompositeSpec:
+    def state_spec(self) -> Composite:
         """State spec.
 
-        Must be a :class:`torchrl.data.CompositeSpec` instance.
+        Must be a :class:`torchrl.data.Composite` instance.
         The keys listed here should be provided as input alongside actions to the environment.
 
         In TorchRL, even though they are not properly speaking "state"
@@ -1377,10 +1371,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             ...     break
             >>> env = BraxEnv(envname)
             >>> env.state_spec
-            CompositeSpec(
-                state: CompositeSpec(
-                    pipeline_state: CompositeSpec(
-                        q: UnboundedContinuousTensorSpec(
+            Composite(
+                state: Composite(
+                    pipeline_state: Composite(
+                        q: UnboundedContinuous(
                             shape=torch.Size([15]),
                             space=None,
                             device=cpu,
@@ -1392,14 +1386,14 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         """
         state_spec = self.input_spec["full_state_spec"]
         if state_spec is None:
-            state_spec = CompositeSpec(shape=self.batch_size, device=self.device)
+            state_spec = Composite(shape=self.batch_size, device=self.device)
             self.input_spec.unlock_()
             self.input_spec["full_state_spec"] = state_spec
             self.input_spec.lock_()
         return state_spec
 
     @state_spec.setter
-    def state_spec(self, value: CompositeSpec) -> None:
+    def state_spec(self, value: Composite) -> None:
         try:
             self.input_spec.unlock_()
             try:
@@ -1407,12 +1401,12 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             except AttributeError:
                 pass
             if value is None:
-                self.input_spec["full_state_spec"] = CompositeSpec(
+                self.input_spec["full_state_spec"] = Composite(
                     device=self.device, shape=self.batch_size
                 )
             else:
                 device = self.input_spec.device
-                if not isinstance(value, CompositeSpec):
+                if not isinstance(value, Composite):
                     raise TypeError("The type of an state_spec must be Composite.")
                 elif value.shape[: len(self.batch_size)] != self.batch_size:
                     raise ValueError(
@@ -1429,10 +1423,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             self.input_spec.lock_()
 
     @property
-    def full_state_spec(self) -> CompositeSpec:
+    def full_state_spec(self) -> Composite:
         """The full state spec.
 
-        ``full_state_spec`` is a :class:`~torchrl.data.CompositeSpec`` instance
+        ``full_state_spec`` is a :class:`~torchrl.data.Composite`` instance
         that contains all the state entries (ie, the input data that is not action).
 
         Examples:
@@ -1441,10 +1435,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             ...     break
             >>> env = BraxEnv(envname)
             >>> env.full_state_spec
-            CompositeSpec(
-                state: CompositeSpec(
-                    pipeline_state: CompositeSpec(
-                        q: UnboundedContinuousTensorSpec(
+            Composite(
+                state: Composite(
+                    pipeline_state: Composite(
+                        q: UnboundedContinuous(
                             shape=torch.Size([15]),
                             space=None,
                             device=cpu,
@@ -1456,7 +1450,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         return self.state_spec
 
     @full_state_spec.setter
-    def full_state_spec(self, spec: CompositeSpec) -> None:
+    def full_state_spec(self, spec: Composite) -> None:
         self.state_spec = spec
 
     def step(self, tensordict: TensorDictBase) -> TensorDictBase:
@@ -1495,7 +1489,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
 
     @classmethod
     def _complete_done(
-        cls, done_spec: CompositeSpec, data: TensorDictBase
+        cls, done_spec: Composite, data: TensorDictBase
     ) -> TensorDictBase:
         """Completes the data structure at step time to put missing done keys."""
         # by default, if a done key is missing, it is assumed that it is False
@@ -1509,14 +1503,15 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         i = -1
         for i, (key, item) in enumerate(done_spec.items()):  # noqa: B007
             val = data.get(key, None)
-            if isinstance(item, CompositeSpec):
+            if isinstance(item, Composite):
                 if val is not None:
                     cls._complete_done(item, val)
                 continue
             shape = (*leading_dim, *item.shape)
             if val is not None:
                 if val.shape != shape:
-                    data.set(key, val.reshape(shape))
+                    val = val.reshape(shape)
+                    data.set(key, val)
                 vals[key] = val
 
         if len(vals) < i + 1:
@@ -1536,6 +1531,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                             "Cannot infer the value of terminated when only done and truncated are present."
                         )
                     data.set("terminated", val)
+                    data_keys.add("terminated")
                 elif (
                     key == "terminated"
                     and val is not None
@@ -1543,11 +1539,10 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
                     and "done" not in data_keys
                 ):
                     if "truncated" in data_keys:
-                        done = val | data.get("truncated")
-                        data.set("done", done)
-                    else:
-                        data.set("done", val)
-                elif val is None:
+                        val = val | data.get("truncated")
+                    data.set("done", val)
+                    data_keys.add("done")
+                elif val is None and key not in data_keys:
                     # we must keep this here: we only want to fill with 0s if we're sure
                     # done should not be copied to terminated or terminated to done
                     # in this case, just fill with 0s
@@ -2300,14 +2295,14 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         return self.step(tensordict)
 
     @property
-    def specs(self) -> CompositeSpec:
+    def specs(self) -> Composite:
         """Returns a Composite container where all the environment are present.
 
         This feature allows one to create an environment, retrieve all of the specs in a single data container and then
         erase the environment from the workspace.
 
         """
-        return CompositeSpec(
+        return Composite(
             output_spec=self.output_spec,
             input_spec=self.input_spec,
             shape=self.batch_size,
@@ -2355,10 +2350,13 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
             break_when_any_done (bool): breaks if any of the done state is True. If False, a reset() is
                 called on the sub-envs that are done. Default is True.
             return_contiguous (bool): if False, a LazyStackedTensorDict will be returned. Default is True.
-            tensordict (TensorDict, optional): if auto_reset is False, an initial
+            tensordict (TensorDict, optional): if ``auto_reset`` is False, an initial
                 tensordict must be provided. Rollout will check if this tensordict has done flags and reset the
-                environment in those dimensions (if needed). This normally should not occur if ``tensordict`` is the
-                output of a reset, but can occur if ``tensordict`` is the last step of a previous rollout.
+                environment in those dimensions (if needed).
+                This normally should not occur if ``tensordict`` is the output of a reset, but can occur
+                if ``tensordict`` is the last step of a previous rollout.
+                A ``tensordict`` can also be provided when ``auto_reset=True`` if metadata need to be passed
+                to the ``reset`` method, such as a batch-size or a device for stateless environments.
             set_truncated (bool, optional): if ``True``, ``"truncated"`` and ``"done"`` keys will be set to
                 ``True`` after completion of the rollout. If no ``"truncated"`` is found within the
                 ``done_spec``, an exception is raised.
@@ -2565,11 +2563,7 @@ class EnvBase(nn.Module, metaclass=_EnvPostInit):
         env_device = self.device
 
         if auto_reset:
-            if tensordict is not None:
-                raise RuntimeError(
-                    "tensordict cannot be provided when auto_reset is True"
-                )
-            tensordict = self.reset()
+            tensordict = self.reset(tensordict)
         elif tensordict is None:
             raise RuntimeError("tensordict must be provided when auto_reset is False")
         else:
@@ -3020,21 +3014,11 @@ class _EnvWrapper(EnvBase):
     def __init__(
         self,
         *args,
-        device: DEVICE_TYPING = NO_DEFAULT,
+        device: DEVICE_TYPING = None,
         batch_size: Optional[torch.Size] = None,
         allow_done_after_reset: bool = False,
         **kwargs,
     ):
-        if device is NO_DEFAULT:
-            warnings.warn(
-                "Your wrapper was not given a device. Currently, this "
-                "value will default to 'cpu'. From v0.5 it will "
-                "default to `None`. With a device of None, no device casting "
-                "is performed and the resulting tensordicts are deviceless. "
-                "Please set your device accordingly.",
-                category=DeprecationWarning,
-            )
-            device = torch.device("cpu")
         super().__init__(
             device=device,
             batch_size=batch_size,
@@ -3180,7 +3164,7 @@ def _do_nothing():
     return
 
 
-def _has_dynamic_specs(spec: CompositeSpec):
+def _has_dynamic_specs(spec: Composite):
     from tensordict.base import _NESTED_TENSORS_AS_LISTS
 
     return any(

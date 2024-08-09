@@ -16,7 +16,7 @@ from tensordict.utils import expand_as_right, prod, set_lazy_legacy
 from torch import nn, Tensor
 from torch.nn.modules.rnn import RNNCellBase
 
-from torchrl.data.tensor_specs import UnboundedContinuousTensorSpec
+from torchrl.data.tensor_specs import Unbounded
 from torchrl.objectives.value.functional import (
     _inv_pad_sequence,
     _split_and_pad_sequence,
@@ -381,6 +381,8 @@ class LSTMModule(ModuleBase):
     Methods:
         set_recurrent_mode: controls whether the module should be executed in
             recurrent mode.
+        make_tensordict_primer: creates the TensorDictPrimer transforms for the environment to be aware of the
+            recurrent states of the RNN.
 
     .. note:: This module relies on specific ``recurrent_state`` keys being present in the input
         TensorDicts. To generate a :class:`~torchrl.envs.transforms.TensorDictPrimer` transform that will automatically
@@ -521,6 +523,45 @@ class LSTMModule(ModuleBase):
         self._recurrent_mode = False
 
     def make_tensordict_primer(self):
+        """Makes a tensordict primer for the environment.
+
+        A :class:`~torchrl.envs.TensorDictPrimer` object will ensure that the policy is aware of the supplementary
+        inputs and outputs (recurrent states) during rollout execution. That way, the data can be shared across
+        processes and dealt with properly.
+
+        Not including a ``TensorDictPrimer`` in the environment may result in poorly defined behaviours, for instance
+        in parallel settings where a step involves copying the new recurrent state from ``"next"`` to the root
+        tensordict, which the meth:`~torchrl.EnvBase.step_mdp` method will not be able to do as the recurrent states
+        are not registered within the environment specs.
+
+        Examples:
+            >>> from torchrl.collectors import SyncDataCollector
+            >>> from torchrl.envs import TransformedEnv, InitTracker
+            >>> from torchrl.envs import GymEnv
+            >>> from torchrl.modules import MLP, LSTMModule
+            >>> from torch import nn
+            >>> from tensordict.nn import TensorDictSequential as Seq, TensorDictModule as Mod
+            >>>
+            >>> env = TransformedEnv(GymEnv("Pendulum-v1"), InitTracker())
+            >>> lstm_module = LSTMModule(
+            ...     input_size=env.observation_spec["observation"].shape[-1],
+            ...     hidden_size=64,
+            ...     in_keys=["observation", "rs_h", "rs_c"],
+            ...     out_keys=["intermediate", ("next", "rs_h"), ("next", "rs_c")])
+            >>> mlp = MLP(num_cells=[64], out_features=1)
+            >>> policy = Seq(lstm_module, Mod(mlp, in_keys=["intermediate"], out_keys=["action"]))
+            >>> policy(env.reset())
+            >>> env = env.append_transform(lstm_module.make_tensordict_primer())
+            >>> data_collector = SyncDataCollector(
+            ...     env,
+            ...     policy,
+            ...     frames_per_batch=10
+            ... )
+            >>> for data in data_collector:
+            ...     print(data)
+            ...     break
+
+        """
         from torchrl.envs.transforms.transforms import TensorDictPrimer
 
         def make_tuple(key):
@@ -540,12 +581,8 @@ class LSTMModule(ModuleBase):
             )
         return TensorDictPrimer(
             {
-                in_key1: UnboundedContinuousTensorSpec(
-                    shape=(self.lstm.num_layers, self.lstm.hidden_size)
-                ),
-                in_key2: UnboundedContinuousTensorSpec(
-                    shape=(self.lstm.num_layers, self.lstm.hidden_size)
-                ),
+                in_key1: Unbounded(shape=(self.lstm.num_layers, self.lstm.hidden_size)),
+                in_key2: Unbounded(shape=(self.lstm.num_layers, self.lstm.hidden_size)),
             }
         )
 
@@ -624,7 +661,7 @@ class LSTMModule(ModuleBase):
         else:
             tensordict_shaped = tensordict.reshape(-1).unsqueeze(-1)
 
-        is_init = tensordict_shaped.get("is_init").squeeze(-1)
+        is_init = tensordict_shaped["is_init"].squeeze(-1)
         splits = None
         if self.recurrent_mode and is_init[..., 1:].any():
             # if we have consecutive trajectories, things get a little more complicated
@@ -638,7 +675,7 @@ class LSTMModule(ModuleBase):
             tensordict_shaped = _split_and_pad_sequence(
                 tensordict_shaped.select(*self.in_keys, strict=False), splits
             )
-            is_init = tensordict_shaped.get("is_init").squeeze(-1)
+            is_init = tensordict_shaped["is_init"].squeeze(-1)
 
         value, hidden0, hidden1 = (
             tensordict_shaped.get(key, default)
@@ -650,7 +687,7 @@ class LSTMModule(ModuleBase):
         # packed sequences do not help to get the accurate last hidden values
         # if splits is not None:
         #     value = torch.nn.utils.rnn.pack_padded_sequence(value, splits, batch_first=True)
-        if is_init.any() and hidden0 is not None:
+        if hidden0 is not None:
             is_init_expand = expand_as_right(is_init, hidden0)
             hidden0 = torch.where(is_init_expand, 0, hidden0)
             hidden1 = torch.where(is_init_expand, 0, hidden1)
@@ -1065,6 +1102,8 @@ class GRUModule(ModuleBase):
     Methods:
         set_recurrent_mode: controls whether the module should be executed in
             recurrent mode.
+        make_tensordict_primer: creates the TensorDictPrimer transforms for the environment to be aware of the
+            recurrent states of the RNN.
 
     .. note:: This module relies on specific ``recurrent_state`` keys being present in the input
         TensorDicts. To generate a :class:`~torchrl.envs.transforms.TensorDictPrimer` transform that will automatically
@@ -1230,6 +1269,45 @@ class GRUModule(ModuleBase):
         self._recurrent_mode = False
 
     def make_tensordict_primer(self):
+        """Makes a tensordict primer for the environment.
+
+        A :class:`~torchrl.envs.TensorDictPrimer` object will ensure that the policy is aware of the supplementary
+        inputs and outputs (recurrent states) during rollout execution. That way, the data can be shared across
+        processes and dealt with properly.
+
+        Not including a ``TensorDictPrimer`` in the environment may result in poorly defined behaviours, for instance
+        in parallel settings where a step involves copying the new recurrent state from ``"next"`` to the root
+        tensordict, which the meth:`~torchrl.EnvBase.step_mdp` method will not be able to do as the recurrent states
+        are not registered within the environment specs.
+
+        Examples:
+            >>> from torchrl.collectors import SyncDataCollector
+            >>> from torchrl.envs import TransformedEnv, InitTracker
+            >>> from torchrl.envs import GymEnv
+            >>> from torchrl.modules import MLP, LSTMModule
+            >>> from torch import nn
+            >>> from tensordict.nn import TensorDictSequential as Seq, TensorDictModule as Mod
+            >>>
+            >>> env = TransformedEnv(GymEnv("Pendulum-v1"), InitTracker())
+            >>> gru_module = GRUModule(
+            ...     input_size=env.observation_spec["observation"].shape[-1],
+            ...     hidden_size=64,
+            ...     in_keys=["observation", "rs"],
+            ...     out_keys=["intermediate", ("next", "rs")])
+            >>> mlp = MLP(num_cells=[64], out_features=1)
+            >>> policy = Seq(gru_module, Mod(mlp, in_keys=["intermediate"], out_keys=["action"]))
+            >>> policy(env.reset())
+            >>> env = env.append_transform(gru_module.make_tensordict_primer())
+            >>> data_collector = SyncDataCollector(
+            ...     env,
+            ...     policy,
+            ...     frames_per_batch=10
+            ... )
+            >>> for data in data_collector:
+            ...     print(data)
+            ...     break
+
+        """
         from torchrl.envs import TensorDictPrimer
 
         def make_tuple(key):
@@ -1247,9 +1325,7 @@ class GRUModule(ModuleBase):
             )
         return TensorDictPrimer(
             {
-                in_key1: UnboundedContinuousTensorSpec(
-                    shape=(self.gru.num_layers, self.gru.hidden_size)
-                ),
+                in_key1: Unbounded(shape=(self.gru.num_layers, self.gru.hidden_size)),
             }
         )
 
@@ -1328,7 +1404,7 @@ class GRUModule(ModuleBase):
         else:
             tensordict_shaped = tensordict.reshape(-1).unsqueeze(-1)
 
-        is_init = tensordict_shaped.get("is_init").squeeze(-1)
+        is_init = tensordict_shaped["is_init"].squeeze(-1)
         splits = None
         if self.recurrent_mode and is_init[..., 1:].any():
             # if we have consecutive trajectories, things get a little more complicated
@@ -1342,7 +1418,7 @@ class GRUModule(ModuleBase):
             tensordict_shaped = _split_and_pad_sequence(
                 tensordict_shaped.select(*self.in_keys, strict=False), splits
             )
-            is_init = tensordict_shaped.get("is_init").squeeze(-1)
+            is_init = tensordict_shaped["is_init"].squeeze(-1)
 
         value, hidden = (
             tensordict_shaped.get(key, default)

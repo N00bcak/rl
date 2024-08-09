@@ -9,7 +9,7 @@ import warnings
 from copy import deepcopy
 from dataclasses import dataclass
 
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -19,7 +19,7 @@ from tensordict.nn import dispatch, TensorDictModule
 from tensordict.utils import NestedKey, unravel_key
 from torch import Tensor
 
-from torchrl.data.tensor_specs import CompositeSpec
+from torchrl.data.tensor_specs import Composite
 from torchrl.data.utils import _find_action_space
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 
@@ -46,8 +46,15 @@ class CQLLoss(LossModule):
 
     Args:
         actor_network (ProbabilisticActor): stochastic actor
-        qvalue_network (TensorDictModule): Q(s, a) parametric model.
+        qvalue_network (TensorDictModule or list of TensorDictModule): Q(s, a) parametric model.
             This module typically outputs a ``"state_action_value"`` entry.
+            If a single instance of `qvalue_network` is provided, it will be duplicated ``N``
+            times (where ``N=2`` for this loss). If a list of modules is passed, their
+            parameters will be stacked unless they share the same identity (in which case
+            the original parameter will be expanded).
+
+            .. warning:: When a list of parameters if passed, it will __not__ be compared against the policy parameters
+              and all the parameters will be considered as untied.
 
     Keyword args:
         loss_function (str, optional): loss function to be used with
@@ -93,15 +100,15 @@ class CQLLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.cql import CQLLoss
         >>> from tensordict import TensorDict
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -153,15 +160,15 @@ class CQLLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.cql import CQLLoss
         >>> _ = torch.manual_seed(42)
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -266,7 +273,7 @@ class CQLLoss(LossModule):
     def __init__(
         self,
         actor_network: ProbabilisticActor,
-        qvalue_network: TensorDictModule,
+        qvalue_network: TensorDictModule | List[TensorDictModule],
         *,
         loss_function: str = "smooth_l1",
         alpha_init: float = 1.0,
@@ -366,14 +373,16 @@ class CQLLoss(LossModule):
                 "log_alpha_prime",
                 torch.nn.Parameter(torch.tensor(math.log(1.0), device=device)),
             )
+        self._make_vmap()
+        self.reduction = reduction
 
+    def _make_vmap(self):
         self._vmap_qvalue_networkN0 = _vmap_func(
             self.qvalue_network, (None, 0), randomness=self.vmap_randomness
         )
         self._vmap_qvalue_network00 = _vmap_func(
             self.qvalue_network, randomness=self.vmap_randomness
         )
-        self.reduction = reduction
 
     @property
     def target_entropy(self):
@@ -396,8 +405,8 @@ class CQLLoss(LossModule):
                         "the target entropy explicitely or provide the spec of the "
                         "action tensor in the actor network."
                     )
-                if not isinstance(action_spec, CompositeSpec):
-                    action_spec = CompositeSpec({self.tensor_keys.action: action_spec})
+                if not isinstance(action_spec, Composite):
+                    action_spec = Composite({self.tensor_keys.action: action_spec})
                 if (
                     isinstance(self.tensor_keys.action, tuple)
                     and len(self.tensor_keys.action) > 1
@@ -924,11 +933,11 @@ class DiscreteCQLLoss(LossModule):
 
     Examples:
         >>> from torchrl.modules import MLP, QValueActor
-        >>> from torchrl.data import OneHotDiscreteTensorSpec
+        >>> from torchrl.data import OneHot
         >>> from torchrl.objectives import DiscreteCQLLoss
         >>> n_obs, n_act = 4, 3
         >>> value_net = MLP(in_features=n_obs, out_features=n_act)
-        >>> spec = OneHotDiscreteTensorSpec(n_act)
+        >>> spec = OneHot(n_act)
         >>> actor = QValueActor(value_net, in_keys=["observation"], action_space=spec)
         >>> loss = DiscreteCQLLoss(actor, action_space=spec)
         >>> batch = [10,]
@@ -960,12 +969,12 @@ class DiscreteCQLLoss(LossModule):
 
     Examples:
         >>> from torchrl.objectives import DiscreteCQLLoss
-        >>> from torchrl.data import OneHotDiscreteTensorSpec
+        >>> from torchrl.data import OneHot
         >>> from torch import nn
         >>> import torch
         >>> n_obs = 3
         >>> n_action = 4
-        >>> action_spec = OneHotDiscreteTensorSpec(n_action)
+        >>> action_spec = OneHot(n_action)
         >>> value_network = nn.Linear(n_obs, n_action) # a simple value model
         >>> dcql_loss = DiscreteCQLLoss(value_network, action_space=action_spec)
         >>> # define data

@@ -88,9 +88,10 @@ conda deactivate
 conda activate "${env_dir}"
 
 echo "installing gymnasium"
-pip3 install "gymnasium[atari,ale-py,accept-rom-license]"
+pip3 install "gymnasium"
+pip3 install ale_py
 pip3 install mo-gymnasium[mujoco]  # requires here bc needs mujoco-py
-pip3 install mujoco -U
+pip3 install "mujoco<3.2.1" -U
 
 # sanity check: remove?
 python3 -c """

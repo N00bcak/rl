@@ -9,7 +9,7 @@ import warnings
 from dataclasses import dataclass
 from functools import wraps
 from numbers import Number
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -18,7 +18,7 @@ from tensordict import TensorDict, TensorDictBase, TensorDictParams
 from tensordict.nn import dispatch, TensorDictModule
 from tensordict.utils import NestedKey
 from torch import Tensor
-from torchrl.data.tensor_specs import CompositeSpec, TensorSpec
+from torchrl.data.tensor_specs import Composite, TensorSpec
 from torchrl.data.utils import _find_action_space
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import ProbabilisticActor
@@ -57,6 +57,14 @@ class SACLoss(LossModule):
         actor_network (ProbabilisticActor): stochastic actor
         qvalue_network (TensorDictModule): Q(s, a) parametric model.
             This module typically outputs a ``"state_action_value"`` entry.
+            If a single instance of `qvalue_network` is provided, it will be duplicated ``num_qvalue_nets``
+            times. If a list of modules is passed, their
+            parameters will be stacked unless they share the same identity (in which case
+            the original parameter will be expanded).
+
+            .. warning:: When a list of parameters if passed, it will __not__ be compared against the policy parameters
+              and all the parameters will be considered as untied.
+
         value_network (TensorDictModule, optional): V(s) parametric model.
             This module typically outputs a ``"state_value"`` entry.
 
@@ -64,6 +72,7 @@ class SACLoss(LossModule):
               If not provided, the second version of SAC is assumed, where
               only the Q-Value network is needed.
 
+    Keyword Args:
         num_qvalue_nets (integer, optional): number of Q-Value networks used.
             Defaults to ``2``.
         loss_function (str, optional): loss function to be used with
@@ -98,7 +107,7 @@ class SACLoss(LossModule):
             priority (for prioritized replay buffer usage). Defaults to ``"td_error"``.
         separate_losses (bool, optional): if ``True``, shared parameters between
             policy and critic will only be trained on the policy loss.
-            Defaults to ``False``, ie. gradients are propagated to shared
+            Defaults to ``False``, i.e., gradients are propagated to shared
             parameters for both policy and critic losses.
         reduction (str, optional): Specifies the reduction to apply to the output:
             ``"none"`` | ``"mean"`` | ``"sum"``. ``"none"``: no reduction will be applied,
@@ -108,15 +117,15 @@ class SACLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.sac import SACLoss
         >>> from tensordict import TensorDict
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -171,15 +180,15 @@ class SACLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data import BoundedTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data import Bounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.sac import SACLoss
         >>> _ = torch.manual_seed(42)
         >>> n_act, n_obs = 4, 3
-        >>> spec = BoundedTensorSpec(-torch.ones(n_act), torch.ones(n_act), (n_act,))
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> spec = Bounded(-torch.ones(n_act), torch.ones(n_act), (n_act,))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -280,7 +289,7 @@ class SACLoss(LossModule):
     def __init__(
         self,
         actor_network: ProbabilisticActor,
-        qvalue_network: TensorDictModule,
+        qvalue_network: TensorDictModule | List[TensorDictModule],
         value_network: Optional[TensorDictModule] = None,
         *,
         num_qvalue_nets: int = 2,
@@ -394,14 +403,17 @@ class SACLoss(LossModule):
             )
         if gamma is not None:
             raise TypeError(_GAMMA_LMBDA_DEPREC_ERROR)
+        self._make_vmap()
+        self.reduction = reduction
+
+    def _make_vmap(self):
         self._vmap_qnetworkN0 = _vmap_func(
             self.qvalue_network, (None, 0), randomness=self.vmap_randomness
         )
         if self._version == 1:
             self._vmap_qnetwork00 = _vmap_func(
-                qvalue_network, randomness=self.vmap_randomness
+                self.qvalue_network, randomness=self.vmap_randomness
             )
-        self.reduction = reduction
 
     @property
     def target_entropy_buffer(self):
@@ -428,8 +440,8 @@ class SACLoss(LossModule):
                     "the target entropy explicitely or provide the spec of the "
                     "action tensor in the actor network."
                 )
-            if not isinstance(action_spec, CompositeSpec):
-                action_spec = CompositeSpec({self.tensor_keys.action: action_spec})
+            if not isinstance(action_spec, Composite):
+                action_spec = Composite({self.tensor_keys.action: action_spec})
             if (
                 isinstance(self.tensor_keys.action, tuple)
                 and len(self.tensor_keys.action) > 1
@@ -806,9 +818,9 @@ class DiscreteSACLoss(LossModule):
         qvalue_network (TensorDictModule): a single Q-value network that will be multiplicated as many times as needed.
         action_space (str or TensorSpec): Action space. Must be one of
             ``"one-hot"``, ``"mult_one_hot"``, ``"binary"`` or ``"categorical"``,
-            or an instance of the corresponding specs (:class:`torchrl.data.OneHotDiscreteTensorSpec`,
-            :class:`torchrl.data.MultiOneHotDiscreteTensorSpec`,
-            :class:`torchrl.data.BinaryDiscreteTensorSpec` or :class:`torchrl.data.DiscreteTensorSpec`).
+            or an instance of the corresponding specs (:class:`torchrl.data.OneHot`,
+            :class:`torchrl.data.MultiOneHot`,
+            :class:`torchrl.data.Binary` or :class:`torchrl.data.Categorical`).
         num_actions (int, optional): number of actions in the action space.
             To be provided if target_entropy is set to "auto".
         num_qvalue_nets (int, optional): Number of Q-value networks to be trained. Default is 2.
@@ -830,7 +842,7 @@ class DiscreteSACLoss(LossModule):
             Default is `"td_error"`.
         separate_losses (bool, optional): if ``True``, shared parameters between
             policy and critic will only be trained on the policy loss.
-            Defaults to ``False``, ie. gradients are propagated to shared
+            Defaults to ``False``, i.e., gradients are propagated to shared
             parameters for both policy and critic losses.
         reduction (str, optional): Specifies the reduction to apply to the output:
             ``"none"`` | ``"mean"`` | ``"sum"``. ``"none"``: no reduction will be applied,
@@ -840,16 +852,15 @@ class DiscreteSACLoss(LossModule):
     Examples:
     >>> import torch
     >>> from torch import nn
-    >>> from torchrl.data.tensor_specs import OneHotDiscreteTensorSpec
-    >>> from torchrl.modules.distributions.continuous import NormalParamWrapper
-    >>> from torchrl.modules.distributions.discrete import OneHotCategorical
+    >>> from torchrl.data.tensor_specs import OneHot
+    >>> from torchrl.modules.distributions import NormalParamExtractor, OneHotCategorical
     >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
     >>> from torchrl.modules.tensordict_module.common import SafeModule
     >>> from torchrl.objectives.sac import DiscreteSACLoss
     >>> from tensordict import TensorDict
     >>> from tensordict.nn import TensorDictModule
     >>> n_act, n_obs = 4, 3
-    >>> spec = OneHotDiscreteTensorSpec(n_act)
+    >>> spec = OneHot(n_act)
     >>> module = TensorDictModule(nn.Linear(n_obs, n_act), in_keys=["observation"], out_keys=["logits"])
     >>> actor = ProbabilisticActor(
     ...     module=module,
@@ -898,15 +909,14 @@ class DiscreteSACLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data.tensor_specs import OneHotDiscreteTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper
-        >>> from torchrl.modules.distributions.discrete import OneHotCategorical
+        >>> from torchrl.data.tensor_specs import OneHot
+        >>> from torchrl.modules.distributions import NormalParamExtractor, OneHotCategorical
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.sac import DiscreteSACLoss
         >>> n_act, n_obs = 4, 3
-        >>> spec = OneHotDiscreteTensorSpec(n_act)
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> spec = OneHot(n_act)
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["logits"])
         >>> actor = ProbabilisticActor(
         ...     module=module,
@@ -1092,10 +1102,13 @@ class DiscreteSACLoss(LossModule):
         self.register_buffer(
             "target_entropy", torch.tensor(target_entropy, device=device)
         )
+        self._make_vmap()
+        self.reduction = reduction
+
+    def _make_vmap(self):
         self._vmap_qnetworkN0 = _vmap_func(
             self.qvalue_network, (None, 0), randomness=self.vmap_randomness
         )
-        self.reduction = reduction
 
     def _forward_value_estimator_keys(self, **kwargs) -> None:
         if self._value_estimator is not None:

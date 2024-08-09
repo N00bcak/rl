@@ -55,16 +55,16 @@ from torch import nn
 from torchrl._utils import implement_for, logger as torchrl_logger
 from torchrl.collectors.collectors import SyncDataCollector
 from torchrl.data import (
-    BinaryDiscreteTensorSpec,
-    BoundedTensorSpec,
-    CompositeSpec,
-    DiscreteTensorSpec,
-    MultiDiscreteTensorSpec,
-    MultiOneHotDiscreteTensorSpec,
-    OneHotDiscreteTensorSpec,
+    Binary,
+    Bounded,
+    Categorical,
+    Composite,
+    MultiCategorical,
+    MultiOneHot,
+    OneHot,
     ReplayBuffer,
     ReplayBufferEnsemble,
-    UnboundedContinuousTensorSpec,
+    Unbounded,
     UnboundedDiscreteTensorSpec,
 )
 from torchrl.data.datasets.atari_dqn import AtariDQNExperienceReplay
@@ -206,18 +206,16 @@ class TestGym:
             assert arg1 == 1
             assert arg2 == 2
 
-            self.observation_spec = CompositeSpec(
-                observation=UnboundedContinuousTensorSpec((*self.batch_size, 3)),
-                other=CompositeSpec(
-                    another_other=UnboundedContinuousTensorSpec((*self.batch_size, 3)),
+            self.observation_spec = Composite(
+                observation=Unbounded((*self.batch_size, 3)),
+                other=Composite(
+                    another_other=Unbounded((*self.batch_size, 3)),
                     shape=self.batch_size,
                 ),
                 shape=self.batch_size,
             )
-            self.action_spec = UnboundedContinuousTensorSpec((*self.batch_size, 3))
-            self.done_spec = DiscreteTensorSpec(
-                2, (*self.batch_size, 1), dtype=torch.bool
-            )
+            self.action_spec = Unbounded((*self.batch_size, 3))
+            self.done_spec = Categorical(2, (*self.batch_size, 1), dtype=torch.bool)
             self.full_done_spec["truncated"] = self.full_done_spec["terminated"].clone()
 
         def _reset(self, tensordict):
@@ -242,16 +240,14 @@ class TestGym:
 
     @implement_for("gym", None, "0.18")
     def _make_spec(self, batch_size, cat, cat_shape, multicat, multicat_shape):
-        return CompositeSpec(
-            a=UnboundedContinuousTensorSpec(shape=(*batch_size, 1)),
-            b=CompositeSpec(
-                c=cat(5, shape=cat_shape, dtype=torch.int64), shape=batch_size
-            ),
+        return Composite(
+            a=Unbounded(shape=(*batch_size, 1)),
+            b=Composite(c=cat(5, shape=cat_shape, dtype=torch.int64), shape=batch_size),
             d=cat(5, shape=cat_shape, dtype=torch.int64),
             e=multicat([2, 3], shape=(*batch_size, multicat_shape), dtype=torch.int64),
-            f=BoundedTensorSpec(-3, 4, shape=(*batch_size, 1)),
+            f=Bounded(-3, 4, shape=(*batch_size, 1)),
             # g=UnboundedDiscreteTensorSpec(shape=(*batch_size, 1), dtype=torch.long),
-            h=BinaryDiscreteTensorSpec(n=5, shape=(*batch_size, 5)),
+            h=Binary(n=5, shape=(*batch_size, 5)),
             shape=batch_size,
         )
 
@@ -259,16 +255,14 @@ class TestGym:
     def _make_spec(  # noqa: F811
         self, batch_size, cat, cat_shape, multicat, multicat_shape
     ):
-        return CompositeSpec(
-            a=UnboundedContinuousTensorSpec(shape=(*batch_size, 1)),
-            b=CompositeSpec(
-                c=cat(5, shape=cat_shape, dtype=torch.int64), shape=batch_size
-            ),
+        return Composite(
+            a=Unbounded(shape=(*batch_size, 1)),
+            b=Composite(c=cat(5, shape=cat_shape, dtype=torch.int64), shape=batch_size),
             d=cat(5, shape=cat_shape, dtype=torch.int64),
             e=multicat([2, 3], shape=(*batch_size, multicat_shape), dtype=torch.int64),
-            f=BoundedTensorSpec(-3, 4, shape=(*batch_size, 1)),
+            f=Bounded(-3, 4, shape=(*batch_size, 1)),
             g=UnboundedDiscreteTensorSpec(shape=(*batch_size, 1), dtype=torch.long),
-            h=BinaryDiscreteTensorSpec(n=5, shape=(*batch_size, 5)),
+            h=Binary(n=5, shape=(*batch_size, 5)),
             shape=batch_size,
         )
 
@@ -276,27 +270,23 @@ class TestGym:
     def _make_spec(  # noqa: F811
         self, batch_size, cat, cat_shape, multicat, multicat_shape
     ):
-        return CompositeSpec(
-            a=UnboundedContinuousTensorSpec(shape=(*batch_size, 1)),
-            b=CompositeSpec(
-                c=cat(5, shape=cat_shape, dtype=torch.int64), shape=batch_size
-            ),
+        return Composite(
+            a=Unbounded(shape=(*batch_size, 1)),
+            b=Composite(c=cat(5, shape=cat_shape, dtype=torch.int64), shape=batch_size),
             d=cat(5, shape=cat_shape, dtype=torch.int64),
             e=multicat([2, 3], shape=(*batch_size, multicat_shape), dtype=torch.int64),
-            f=BoundedTensorSpec(-3, 4, shape=(*batch_size, 1)),
+            f=Bounded(-3, 4, shape=(*batch_size, 1)),
             g=UnboundedDiscreteTensorSpec(shape=(*batch_size, 1), dtype=torch.long),
-            h=BinaryDiscreteTensorSpec(n=5, shape=(*batch_size, 5)),
+            h=Binary(n=5, shape=(*batch_size, 5)),
             shape=batch_size,
         )
 
     @pytest.mark.parametrize("categorical", [True, False])
     def test_gym_spec_cast(self, categorical):
         batch_size = [3, 4]
-        cat = DiscreteTensorSpec if categorical else OneHotDiscreteTensorSpec
+        cat = Categorical if categorical else OneHot
         cat_shape = batch_size if categorical else (*batch_size, 5)
-        multicat = (
-            MultiDiscreteTensorSpec if categorical else MultiOneHotDiscreteTensorSpec
-        )
+        multicat = MultiCategorical if categorical else MultiOneHot
         multicat_shape = 2 if categorical else 5
         spec = self._make_spec(batch_size, cat, cat_shape, multicat, multicat_shape)
         recon = _gym_to_torchrl_spec_transform(
@@ -2143,7 +2133,6 @@ class TestVmas:
     @pytest.mark.parametrize("scenario_name", VmasWrapper.available_envs)
     def test_vmas_batch_size_error(self, scenario_name, batch_size):
         num_envs = 12
-        n_agents = 2
         if len(batch_size) > 1:
             with pytest.raises(
                 TypeError,
@@ -2152,7 +2141,6 @@ class TestVmas:
                 _ = VmasEnv(
                     scenario=scenario_name,
                     num_envs=num_envs,
-                    n_agents=n_agents,
                     batch_size=batch_size,
                 )
         elif len(batch_size) == 1 and batch_size != (num_envs,):
@@ -2163,14 +2151,12 @@ class TestVmas:
                 _ = VmasEnv(
                     scenario=scenario_name,
                     num_envs=num_envs,
-                    n_agents=n_agents,
                     batch_size=batch_size,
                 )
         else:
             env = VmasEnv(
                 scenario=scenario_name,
                 num_envs=num_envs,
-                n_agents=n_agents,
                 batch_size=batch_size,
             )
             env.close()
@@ -2252,19 +2238,11 @@ class TestVmas:
             env.close()
 
     @pytest.mark.parametrize("num_envs", [1, 20])
-    @pytest.mark.parametrize("n_agents", [1, 5])
     @pytest.mark.parametrize("scenario_name", VmasWrapper.available_envs)
-    def test_vmas_repr(self, scenario_name, num_envs, n_agents):
-        if (
-            n_agents == 1
-            and scenario_name == "balance"
-            or scenario_name == "simple_adversary"
-        ):
-            return
+    def test_vmas_repr(self, scenario_name, num_envs):
         env = VmasEnv(
             scenario=scenario_name,
             num_envs=num_envs,
-            n_agents=n_agents,
         )
         assert str(env) == (
             f"{VmasEnv.__name__}(num_envs={num_envs}, n_agents={env.n_agents},"

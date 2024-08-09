@@ -9,7 +9,6 @@ from contextlib import nullcontext
 import torch
 
 import torch.nn as nn
-from hydra.utils import instantiate
 from tensordict import NestedKey
 from tensordict.nn import (
     InteractionType,
@@ -21,11 +20,11 @@ from tensordict.nn import (
 from torchrl.collectors import SyncDataCollector
 
 from torchrl.data import (
-    CompositeSpec,
+    Composite,
     LazyMemmapStorage,
     SliceSampler,
     TensorDictReplayBuffer,
-    UnboundedContinuousTensorSpec,
+    Unbounded,
 )
 
 from torchrl.envs import (
@@ -53,7 +52,7 @@ from torchrl.envs import (
 )
 from torchrl.envs.utils import check_env_specs, ExplorationType, set_exploration_type
 from torchrl.modules import (
-    AdditiveGaussianWrapper,
+    AdditiveGaussianModule,
     DreamerActor,
     IndependentNormal,
     MLP,
@@ -88,17 +87,17 @@ def _make_env(cfg, device, from_pixels=False):
             cfg.env.task,
             from_pixels=cfg.env.from_pixels or from_pixels,
             pixels_only=cfg.env.from_pixels,
+            device=device,
         )
     else:
         raise NotImplementedError(f"Unknown lib {lib}.")
     default_dict = {
-        "state": UnboundedContinuousTensorSpec(shape=(cfg.networks.state_dim,)),
-        "belief": UnboundedContinuousTensorSpec(shape=(cfg.networks.rssm_hidden_dim,)),
+        "state": Unbounded(shape=(cfg.networks.state_dim,)),
+        "belief": Unbounded(shape=(cfg.networks.rssm_hidden_dim,)),
     }
     env = env.append_transform(
         TensorDictPrimer(random=False, default_value=0, **default_dict)
     )
-    assert env is not None
     return env
 
 
@@ -129,7 +128,7 @@ def transform_env(cfg, env):
 
 def make_environments(cfg, parallel_envs=1, logger=None):
     """Make environments for training and evaluation."""
-    func = functools.partial(_make_env, cfg=cfg, device=cfg.env.device)
+    func = functools.partial(_make_env, cfg=cfg, device=_default_device(cfg.env.device))
     train_env = ParallelEnv(
         parallel_envs,
         EnvCreator(func),
@@ -138,7 +137,10 @@ def make_environments(cfg, parallel_envs=1, logger=None):
     train_env = transform_env(cfg, train_env)
     train_env.set_seed(cfg.env.seed)
     func = functools.partial(
-        _make_env, cfg=cfg, device=cfg.env.device, from_pixels=cfg.logger.video
+        _make_env,
+        cfg=cfg,
+        device=_default_device(cfg.env.device),
+        from_pixels=cfg.logger.video,
     )
     eval_env = ParallelEnv(
         1,
@@ -264,13 +266,16 @@ def make_dreamer(
         test_env=test_env,
     )
     # Exploration noise to be added to the actor_realworld
-    actor_realworld = AdditiveGaussianWrapper(
+    actor_realworld = TensorDictSequential(
         actor_realworld,
-        sigma_init=1.0,
-        sigma_end=1.0,
-        annealing_num_steps=1,
-        mean=0.0,
-        std=cfg.networks.exploration_noise,
+        AdditiveGaussianModule(
+            spec=test_env.action_spec,
+            sigma_init=1.0,
+            sigma_end=1.0,
+            annealing_num_steps=1,
+            mean=0.0,
+            std=cfg.networks.exploration_noise,
+        ),
     )
 
     # Make Critic
@@ -332,7 +337,7 @@ def make_collector(cfg, train_env, actor_model_explore):
         init_random_frames=cfg.collector.init_random_frames,
         frames_per_batch=cfg.collector.frames_per_batch,
         total_frames=cfg.collector.total_frames,
-        policy_device=instantiate(cfg.collector.device),
+        policy_device=_default_device(cfg.collector.device),
         env_device=train_env.device,
         storing_device="cpu",
     )
@@ -464,13 +469,13 @@ def _dreamer_make_actor_sim(action_key, proof_environment, actor_module):
             actor_module,
             in_keys=["state", "belief"],
             out_keys=["loc", "scale"],
-            spec=CompositeSpec(
+            spec=Composite(
                 **{
-                    "loc": UnboundedContinuousTensorSpec(
+                    "loc": Unbounded(
                         proof_environment.action_spec.shape,
                         device=proof_environment.action_spec.device,
                     ),
-                    "scale": UnboundedContinuousTensorSpec(
+                    "scale": Unbounded(
                         proof_environment.action_spec.shape,
                         device=proof_environment.action_spec.device,
                     ),
@@ -483,7 +488,7 @@ def _dreamer_make_actor_sim(action_key, proof_environment, actor_module):
             default_interaction_type=InteractionType.RANDOM,
             distribution_class=TanhNormal,
             distribution_kwargs={"tanh_loc": True},
-            spec=CompositeSpec(**{action_key: proof_environment.action_spec}),
+            spec=Composite(**{action_key: proof_environment.action_spec}),
         ),
     )
     return actor_simulator
@@ -521,12 +526,12 @@ def _dreamer_make_actor_real(
                 actor_module,
                 in_keys=["state", "belief"],
                 out_keys=["loc", "scale"],
-                spec=CompositeSpec(
+                spec=Composite(
                     **{
-                        "loc": UnboundedContinuousTensorSpec(
+                        "loc": Unbounded(
                             proof_environment.action_spec.shape,
                         ),
-                        "scale": UnboundedContinuousTensorSpec(
+                        "scale": Unbounded(
                             proof_environment.action_spec.shape,
                         ),
                     }
@@ -535,12 +540,10 @@ def _dreamer_make_actor_real(
             SafeProbabilisticModule(
                 in_keys=["loc", "scale"],
                 out_keys=[action_key],
-                default_interaction_type=InteractionType.MODE,
+                default_interaction_type=InteractionType.DETERMINISTIC,
                 distribution_class=TanhNormal,
                 distribution_kwargs={"tanh_loc": True},
-                spec=CompositeSpec(
-                    **{action_key: proof_environment.action_spec.to("cpu")}
-                ),
+                spec=Composite(**{action_key: proof_environment.action_spec.to("cpu")}),
             ),
         ),
         SafeModule(

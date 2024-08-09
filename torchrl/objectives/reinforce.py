@@ -56,7 +56,7 @@ class ReinforceLoss(LossModule):
             value is expected to be written. Defaults to ``"value_target"``.
         separate_losses (bool, optional): if ``True``, shared parameters between
             policy and critic will only be trained on the policy loss.
-            Defaults to ``False``, ie. gradients are propagated to shared
+            Defaults to ``False``, i.e., gradients are propagated to shared
             parameters for both policy and critic losses.
         functional (bool, optional): whether modules should be functionalized.
             Functionalizing permits features like meta-RL, but makes it
@@ -100,22 +100,22 @@ class ReinforceLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data.tensor_specs import UnboundedContinuousTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data.tensor_specs import Unbounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.reinforce import ReinforceLoss
         >>> from tensordict import TensorDict
         >>> n_obs, n_act = 3, 5
         >>> value_net = ValueOperator(nn.Linear(n_obs, 1), in_keys=["observation"])
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor_net = ProbabilisticActor(
         ...     module,
         ...     distribution_class=TanhNormal,
         ...     return_log_prob=True,
         ...     in_keys=["loc", "scale"],
-        ...     spec=UnboundedContinuousTensorSpec(n_act),)
+        ...     spec=Unbounded(n_act),)
         >>> loss = ReinforceLoss(actor_net, value_net)
         >>> batch = 2
         >>> data = TensorDict({
@@ -146,21 +146,21 @@ class ReinforceLoss(LossModule):
     Examples:
         >>> import torch
         >>> from torch import nn
-        >>> from torchrl.data.tensor_specs import UnboundedContinuousTensorSpec
-        >>> from torchrl.modules.distributions.continuous import NormalParamWrapper, TanhNormal
+        >>> from torchrl.data.tensor_specs import Unbounded
+        >>> from torchrl.modules.distributions import NormalParamExtractor, TanhNormal
         >>> from torchrl.modules.tensordict_module.actors import ProbabilisticActor, ValueOperator
         >>> from torchrl.modules.tensordict_module.common import SafeModule
         >>> from torchrl.objectives.reinforce import ReinforceLoss
         >>> n_obs, n_act = 3, 5
         >>> value_net = ValueOperator(nn.Linear(n_obs, 1), in_keys=["observation"])
-        >>> net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        >>> net = nn.Sequential(nn.Linear(n_obs, 2 * n_act), NormalParamExtractor())
         >>> module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
         >>> actor_net = ProbabilisticActor(
         ...     module,
         ...     distribution_class=TanhNormal,
         ...     return_log_prob=True,
         ...     in_keys=["loc", "scale"],
-        ...     spec=UnboundedContinuousTensorSpec(n_act),)
+        ...     spec=Unbounded(n_act),)
         >>> loss = ReinforceLoss(actor_net, value_net)
         >>> batch = 2
         >>> loss_actor, loss_value = loss(
@@ -398,32 +398,21 @@ class ReinforceLoss(LossModule):
     def loss_critic(self, tensordict: TensorDictBase) -> torch.Tensor:
 
         if self.clip_value:
-            try:
-                old_state_value = tensordict.get(self.tensor_keys.value).clone()
-            except KeyError:
+            old_state_value = tensordict.get(
+                self.tensor_keys.value, None
+            )  # TODO: None soon to be removed
+            if old_state_value is None:
                 raise KeyError(
                     f"clip_value is set to {self.clip_value}, but "
                     f"the key {self.tensor_keys.value} was not found in the input tensordict. "
                     f"Make sure that the value_key passed to Reinforce exists in the input tensordict."
                 )
+            old_state_value = old_state_value.clone()
 
-        try:
-            target_return = tensordict.get(self.tensor_keys.value_target)
-            tensordict_select = tensordict.select(
-                *self.critic_network.in_keys, strict=False
-            )
-            with self.critic_network_params.to_module(
-                self.critic_network
-            ) if self.functional else contextlib.nullcontext():
-                state_value = self.critic_network(tensordict_select).get(
-                    self.tensor_keys.value
-                )
-            loss_value = distance_loss(
-                target_return,
-                state_value,
-                loss_function=self.loss_critic_type,
-            )
-        except KeyError:
+        target_return = tensordict.get(
+            self.tensor_keys.value_target, None
+        )  # TODO: None soon to be removed
+        if target_return is None:
             raise KeyError(
                 f"the key {self.tensor_keys.value_target} was not found in the input tensordict. "
                 f"Make sure you provided the right key and the value_target (i.e. the target "
@@ -432,6 +421,20 @@ class ReinforceLoss(LossModule):
                 f"can be used for the value loss."
             )
 
+        tensordict_select = tensordict.select(
+            *self.critic_network.in_keys, strict=False
+        )
+        with self.critic_network_params.to_module(
+            self.critic_network
+        ) if self.functional else contextlib.nullcontext():
+            state_value = self.critic_network(tensordict_select).get(
+                self.tensor_keys.value
+            )
+        loss_value = distance_loss(
+            target_return,
+            state_value,
+            loss_function=self.loss_critic_type,
+        )
         clip_fraction = None
         if self.clip_value:
             loss_value, clip_fraction = _clip_value_loss(

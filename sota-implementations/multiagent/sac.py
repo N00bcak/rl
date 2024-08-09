@@ -300,7 +300,7 @@ def train(cfg: "DictConfig"):  # noqa: F821
             and cfg.logger.backend
         ):
             evaluation_start = time.time()
-            with torch.no_grad(), set_exploration_type(ExplorationType.MODE):
+            with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
                 env_test.frames = []
                 rollouts = env_test.rollout(
                     max_steps=cfg.env.max_steps,
@@ -318,6 +318,11 @@ def train(cfg: "DictConfig"):  # noqa: F821
         if cfg.logger.backend == "wandb":
             logger.experiment.log({}, commit=True)
         sampling_start = time.time()
+    collector.shutdown()
+    if not env.is_closed:
+        env.close()
+    if not env_test.is_closed:
+        env_test.close()
 
 
 if __name__ == "__main__":

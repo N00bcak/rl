@@ -210,7 +210,7 @@ def main(cfg: "DictConfig"):  # noqa: F821
         )
 
         # Get test rewards
-        with torch.no_grad(), set_exploration_type(ExplorationType.MODE):
+        with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
             if ((i - 1) * frames_in_batch) // cfg_logger_test_interval < (
                 i * frames_in_batch
             ) // cfg_logger_test_interval:
@@ -235,6 +235,9 @@ def main(cfg: "DictConfig"):  # noqa: F821
         collector.update_policy_weights_()
         sampling_start = time.time()
 
+    collector.shutdown()
+    if not test_env.is_closed:
+        test_env.close()
     end_time = time.time()
     execution_time = end_time - start_time
     torchrl_logger.info(f"Training took {execution_time:.2f} seconds to finish")
